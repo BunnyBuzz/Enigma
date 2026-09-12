@@ -36,6 +36,8 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <cstdint>
+#include <utility>
 
 namespace ghidra {
 
@@ -167,6 +169,19 @@ public:
 
     std::string toString() const;
 
+    // GP-6766 MIPS16e: half-open [start, end) address ranges that decode
+    // with 16-bit tables (ISA_MODE=1). Seeded by the loader from STO_MIPS16
+    // function symbols. Consumers: DecompInterface sets SLEIGH context
+    // (semantically correct MIPS16e); DisassemblyAnalyzer drives Capstone's
+    // microMIPS mode there (plausible 2-byte stepping, microMIPS-flavored
+    // mnemonics - this Capstone has no MIPS16e mode).
+    void addMips16Range(uint64_t start, uint64_t end) {
+        if (end > start) mips16Ranges_.emplace_back(start, end);
+    }
+    const std::vector<std::pair<uint64_t, uint64_t>>& getMips16Ranges() const {
+        return mips16Ranges_;
+    }
+
 private:
     std::string name_;
     Language* language_ = nullptr;
@@ -200,6 +215,7 @@ private:
     bool changeable_ = true;
     bool imageBaseOverride_ = false;
     bool languageUpgradeRequired_ = false;
+    std::vector<std::pair<uint64_t, uint64_t>> mips16Ranges_;
 
     std::unique_ptr<DataTypeManager> dataTypeManagerImpl_;
     std::unique_ptr<ReferenceManager> referenceManagerImpl_;

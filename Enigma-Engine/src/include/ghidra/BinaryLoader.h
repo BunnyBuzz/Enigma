@@ -35,6 +35,11 @@ struct SectionInfo {
     bool isReadable;
     bool isWritable;
     bool isExecutable;
+    // ELF SHF_ALLOC (sh_flags 0x2). Non-allocated sections (.symtab,
+    // .pdr, .comment...) live at file offsets that collide with the memory
+    // image and must not become memory blocks. Defaults true so every
+    // other format keeps its current behavior.
+    bool isAllocated = true;
     uint32_t reserved1 = 0; // Mach-O: indirect sym table index / section ordinal
     uint32_t reserved2 = 0; // Mach-O: stub size / alignment
 };
@@ -45,6 +50,11 @@ struct SymbolInfo {
     uint64_t size;
     bool isFunction;
     bool isExternal;
+    // GP-6766: MIPS16e function (ELF STO_MIPS16 st_other flag). The loader
+    // sets this for MIPS STT_FUNC symbols; populateProgram records a decode
+    // range so SLEIGH uses 16-bit tables there (the native Capstone path has
+    // no MIPS16e mode and decodes such ranges as microMIPS instead).
+    bool isMips16 = false;
 };
 
 struct ImportInfo {

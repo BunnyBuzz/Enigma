@@ -14,6 +14,10 @@
 #include <QInputDialog>
 #include <QMenu>
 #include <QAction>
+#include <QDialog>
+#include <QFormLayout>
+#include <QDialogButtonBox>
+#include <QComboBox>
 
 namespace ghidra {
 
@@ -31,15 +35,13 @@ StructureEditorWidget::StructureEditorWidget(QWidget* parent) : QWidget(parent) 
     connect(filter_, &QLineEdit::textChanged, this, &StructureEditorWidget::onFilter);
     row->addWidget(filter_, 1);
 
-    auto* btnS = new QPushButton("+S");
+    auto* btnS = new QPushButton("New Struct");
     btnS->setToolTip("New structure");
-    btnS->setFixedWidth(30);
     connect(btnS, &QPushButton::clicked, this, &StructureEditorWidget::onAddStruct);
     row->addWidget(btnS);
 
-    auto* btnU = new QPushButton("+U");
+    auto* btnU = new QPushButton("New Union");
     btnU->setToolTip("New union");
-    btnU->setFixedWidth(30);
     connect(btnU, &QPushButton::clicked, this, &StructureEditorWidget::onAddUnion);
     row->addWidget(btnU);
 
@@ -216,8 +218,9 @@ void StructureEditorWidget::onAddStruct() {
     QString n = QInputDialog::getText(this, "New Structure", "Name:", QLineEdit::Normal, "", &ok);
     if (!ok || n.isEmpty()) return;
     GuiConflictHandler h;
-    dtm_->addDataType(new StructureDataType(n.toStdString(), 0, dtm_), &h);
+    DataType* added = dtm_->addDataType(new StructureDataType(n.toStdString(), 0, dtm_), &h);
     rebuild();
+    if (added) selectType(added);
     emit typeModified(n);
 }
 
@@ -227,9 +230,40 @@ void StructureEditorWidget::onAddUnion() {
     QString n = QInputDialog::getText(this, "New Union", "Name:", QLineEdit::Normal, "", &ok);
     if (!ok || n.isEmpty()) return;
     GuiConflictHandler h;
-    dtm_->addDataType(new UnionDataType(n.toStdString(), dtm_), &h);
+    DataType* added = dtm_->addDataType(new UnionDataType(n.toStdString(), dtm_), &h);
     rebuild();
+    if (added) selectType(added);
     emit typeModified(n);
+}
+
+DataType* StructureEditorWidget::findType(const std::string& name) {
+    if (!dtm_) return nullptr;
+    for (auto* t : dtm_->getDataTypes()) {
+        if (t && t->getName() == name) return t;
+    }
+    return nullptr;
+}
+
+void StructureEditorWidget::selectType(DataType* dt) {
+    if (!dt) return;
+    std::function<bool(QStandardItem*)> search = [&](QStandardItem* item) -> bool {
+        for (int i = 0; i < item->rowCount(); ++i) {
+            QStandardItem* child = item->child(i);
+            QVariant v = child->data(Qt::UserRole);
+            if (v.isValid() && reinterpret_cast<DataType*>(v.value<quintptr>()) == dt) {
+                QModelIndex idx = model_->indexFromItem(child);
+                tree_->setCurrentIndex(idx);
+                tree_->scrollTo(idx);
+                return true;
+            }
+            if (search(child)) return true;
+        }
+        return false;
+    };
+    for (int i = 0; i < model_->rowCount(); ++i) {
+        if (search(model_->item(i))) break;
+    }
+    showFields(dt);
 }
 
 void StructureEditorWidget::onAddField() {
@@ -242,25 +276,50 @@ void StructureEditorWidget::onAddField() {
     Union* u = dynamic_cast<Union*>(dt);
     if (!s && !u) return;
 
-    bool ok;
-    QString fn = QInputDialog::getText(this, "Add Field", "Field name:", QLineEdit::Normal, "", &ok);
-    if (!ok || fn.isEmpty()) return;
+    // Single dialog: field name + type picker together
+    QDialog dlg(this);
+    dlg.setWindowTitle("Add Field to " + QString::fromStdString(dt->getName()));
+    auto* form = new QFormLayout(&dlg);
 
-    QStringList types = {"int8","int16","int32","int64","uint8","uint16","uint32","uint64","float","double","bool","char"};
+    auto* nameEdit = new QLineEdit(&dlg);
+    nameEdit->setPlaceholderText("field name");
+    form->addRow("Name:", nameEdit);
+
+    auto* typeCombo = new QComboBox(&dlg);
+    typeCombo->setEditable(true);
+    QStringList types = {"bool","byte","char","short","ushort","int","uint",
+                         "long","ulong","longlong","ulonglong",
+                         "float","double","longdouble","string","pointer"};
     for (auto* t : dtm_->getDataTypes())
         if (t) types.append(QString::fromStdString(t->getName()));
     types.removeDuplicates();
+    types.sort();
+    typeCombo->addItems(types);
+    typeCombo->setCurrentText("int");
+    form->addRow("Type:", typeCombo);
 
-    QString tn = QInputDialog::getItem(this, "Type", "Field type:", types, 2, false, &ok);
-    if (!ok || tn.isEmpty()) tn = "int32";
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addWidget(buttons);
 
-    DataType* fdt = dtm_->getDataType(tn.toStdString());
-    if (!fdt) fdt = dtm_->getDataType("int32");
-    if (!fdt) return;
+    if (dlg.exec() != QDialog::Accepted) return;
+    QString fn = nameEdit->text().trimmed();
+    QString tn = typeCombo->currentText().trimmed();
+    if (fn.isEmpty() || tn.isEmpty()) return;
+
+    DataType* fdt = findType(tn.toStdString());
+    if (!fdt) {
+        QMessageBox::warning(this, "Add Field", "Unknown type \"" + tn + "\"");
+        return;
+    }
 
     if (s) s->add(fdt, fn.toStdString(), "");
     else u->add(fdt, fn.toStdString(), "");
     rebuild();
+    // rebuild() clears selection, so reselect the parent to refresh the table
+    DataType* parent = findType(dt->getName());
+    if (parent) selectType(parent);
     emit typeModified(fn);
 }
 

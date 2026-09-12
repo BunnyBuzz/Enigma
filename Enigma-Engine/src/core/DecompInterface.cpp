@@ -11,6 +11,7 @@
 #include <ghidra/AddressSet.h>
 #include <ghidra/AnalysisBridge.h>
 #include <ghidra/TypeDatabase.h>
+#include <ghidra/ProgramDB.h>
 
 #include <libdecomp.hh>
 #include <sleigh_arch.hh>
@@ -19,6 +20,7 @@
 #include <printc.hh>
 #include <funcdata.hh>
 #include <fspec.hh>
+#include <globalcontext.hh>
 
 #include <translate.hh>
 
@@ -287,6 +289,29 @@ struct DecompInterface::Impl {
         } catch (const std::exception& e) {
             std::cerr << "DecompInterface: Architecture init failed: " << e.what() << std::endl;
             return false;
+        }
+
+        // GP-6766 MIPS16e: paint ISA_MODE=1 over the STO_MIPS16 ranges the
+        // loader recorded, so the 16-bit SLEIGH tables decode there. With
+        // the default context (ISA_MODE=0) those bytes mis-decode as 32-bit.
+        if (langId.find("MIPS") != std::string::npos) {
+            if (auto* pdb = dynamic_cast<ProgramDB*>(program)) {
+                const auto& ranges = pdb->getMips16Ranges();
+                ghidra_decompiler::AddrSpace* cs = arch->getDefaultCodeSpace();
+                if (!ranges.empty() && cs && arch->context) {
+                    try {
+                        for (const auto& r : ranges) {
+                            ghidra_decompiler::Address a1(cs,
+                                static_cast<ghidra_decompiler::int8>(r.first));
+                            ghidra_decompiler::Address a2(cs,
+                                static_cast<ghidra_decompiler::int8>(r.second));
+                            arch->context->setVariableRegion("ISA_MODE", a1, a2, 1);
+                        }
+                    } catch (...) {
+                        // No ISA_MODE variable (unexpected for MIPS); ignore.
+                    }
+                }
+            }
         }
 
         // Enable calling convention display

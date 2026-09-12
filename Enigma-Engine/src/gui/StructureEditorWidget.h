@@ -10,6 +10,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QLabel>
+#include <string>
 
 namespace ghidra {
 
@@ -50,6 +51,8 @@ private:
 
     void rebuild();
     void showFields(DataType* dt);
+    DataType* findType(const std::string& name);
+    void selectType(DataType* dt);
 };
 
 } // namespace ghidra

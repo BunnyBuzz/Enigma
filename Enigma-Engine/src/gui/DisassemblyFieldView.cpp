@@ -481,14 +481,13 @@ const DisassemblyFieldView::DecodedInstruction* DisassemblyFieldView::decodedIns
     inst.address = addr;
     inst.length = model_.instructionLengthAt(addr);
 
-    // GP-6766: Detect MIPS16e by 2-byte instruction length in MIPS programs
+    // GP-6766: Detect MIPS16e by 2-byte instruction length in MIPS programs.
+    // NB: use getLanguageID(), not getLanguage() — the Language object is
+    // usually null here, while the ID is always populated by the loader.
     if (inst.length == 2 && program_) {
-        auto* lang = program_->getLanguage();
-        if (lang) {
-            std::string langId = lang->getLanguageID().toString();
-            if (langId.find("MIPS") != std::string::npos) {
-                inst.isMips16e = true;
-            }
+        std::string langId = program_->getLanguageID().getIdAsString();
+        if (langId.find("MIPS") != std::string::npos) {
+            inst.isMips16e = true;
         }
     }
 
@@ -1013,6 +1012,22 @@ void DisassemblyFieldView::paintEvent(QPaintEvent* event) {
                 if (inst->isMips16e) {
                     painter.fillRect(cfaMarginPx_ - scrollX, y, vpW, cellH,
                         QColor(0xE8, 0xF0, 0xFE, 180));  // light blue tint
+                    // G12: 16-bit marker in the gutter. Same leftmost slot as
+                    // Guard CFG shields (x=2); the two never co-occur (shields
+                    // are x86/PE-only, MIPS16e is MIPS-only), so this stays
+                    // clear of the flow-arrow lanes.
+                    static QFont markerFont([] {
+                        QFont f;
+                        f.setPointSize(7);
+                        f.setBold(true);
+                        return f;
+                    }());
+                    painter.save();
+                    painter.setFont(markerFont);
+                    painter.setPen(QColor(0x1a, 0x5c, 0xb0));
+                    painter.drawText(3, y, 20, cellH,
+                                     Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("16"));
+                    painter.restore();
                 }
             } else {
                 toks = rowTokens(ri);

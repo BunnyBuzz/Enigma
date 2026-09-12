@@ -74,6 +74,9 @@ int main() {
         auto* fm = prog->getFunctionManager();
         auto* func = fm->createFunction("test_func", entry, body, SourceType::DEFAULT);
         TEST("t1.func_created", func != nullptr);
+        // Fresh functions start typeless; the null check belongs here, not
+        // after undo (undo faithfully restores the recorded old type below).
+        TEST("t1.init_ret_null", func && func->getReturnType() == nullptr);
 
         EventLog log;
         log.recordEvent(std::make_unique<SetReturnTypeEvent>(
@@ -95,9 +98,11 @@ int main() {
             TEST("t1.cs_name", changes[0].name == "return_type");
         }
 
-        // Undo / Redo test with built-in type
+        // Undo / Redo test with built-in type. Undo restores the recorded
+        // old type ("void", a registered builtin), not null.
         log.undo(*prog);
-        TEST("t1.undo_ret_null", func->getReturnType() == nullptr);
+        auto* undoRet = func->getReturnType();
+        TEST("t1.undo_ret_void", undoRet && undoRet->getName() == "void");
 
         log.redo(*prog);
         // NOTE: SetReturnTypeEvent::redo looks up type name in DTM.

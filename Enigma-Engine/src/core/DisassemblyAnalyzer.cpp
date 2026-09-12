@@ -47,11 +47,12 @@ static bool parseHexOperand(const std::string& op, uint64_t& out) {
     }
 }
 
-bool DisassemblyAnalyzer::isMips16eSwitchInstruction(const std::string& mnemonic) const {
-    // MIPS16e mode-switch instructions:
-    // - jalx: Jump and Link Exchange (switches to MIPS16e mode)
-    // - jr.hb / jrc: Jump Register with Hazard Barrier (switches back to MIPS32)
-    // - jalx with ISA_MODE context register change
+bool DisassemblyAnalyzer::isIsaSwitchInstruction(const std::string& mnemonic) const {
+    // Compressed-ISA mode-switch instructions (matched against the native
+    // decoder's mnemonics, which are microMIPS-flavored on this Capstone):
+    // - jalx: Jump and Link Exchange (switches to compressed mode; this
+    //   Capstone predates JALX so it never fires - kept for future decoders)
+    // - jr.hb / jrc / restore / save: switch back to MIPS32
     std::string m = mnemonic;
     std::transform(m.begin(), m.end(), m.begin(),
                    [](unsigned char c) { return static_cast<unsigned char>(std::tolower(c)); });
@@ -60,9 +61,9 @@ bool DisassemblyAnalyzer::isMips16eSwitchInstruction(const std::string& mnemonic
            m == "save";
 }
 
-void DisassemblyAnalyzer::handleMips16eContextSwitch(const DisassembledInstruction& di,
-                                                      Disassembler* disassembler,
-                                                      uint64_t addr) {
+void DisassemblyAnalyzer::handleIsaContextSwitch(const DisassembledInstruction& di,
+                                                 Disassembler* disassembler,
+                                                 uint64_t addr) {
     if (!isMips_) return;
 
     std::string m = di.mnemonic;
@@ -71,7 +72,7 @@ void DisassemblyAnalyzer::handleMips16eContextSwitch(const DisassembledInstructi
 
     int newMode = currentIsaMode_;
     if (m == "jalx" || m == "jalxc") {
-        newMode = 1; // Switch to MIPS16e
+        newMode = 1; // Switch to compressed mode
     } else if (m == "jr.hb" || m == "jrc" || m == "jrc.hb" || m == "restore" || m == "save") {
         newMode = 0; // Switch back to MIPS32
     }
@@ -241,6 +242,34 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
             if (got <= 0) break;
 
             std::vector<uint8_t> bytes(readBuf.begin(), readBuf.begin() + got);
+
+            // GP-6766: drive the Capstone ISA mode from the STO_MIPS16
+            // ranges the loader recorded, so compressed bytes decode as
+            // 2-byte instructions. NOTE: mode 1 selects microMIPS tables
+            // (this Capstone has no MIPS16e mode), so native rows get
+            // plausible lengths but microMIPS-flavored mnemonics; the
+            // semantically correct MIPS16e decode is the SLEIGH path.
+            // (JALX-based switching can't self-trigger: this Capstone
+            // predates JALX and decodes the word as SPECIAL3, matching
+            // SLEIGH, so ranges are the authoritative signal.)
+            if (isMips_) {
+                bool wantMips16 = false;
+                if (auto* pdb = dynamic_cast<ProgramDB*>(program)) {
+                    for (const auto& r : pdb->getMips16Ranges()) {
+                        if (currentAddr >= r.first && currentAddr < r.second) {
+                            wantMips16 = true;
+                            break;
+                        }
+                    }
+                }
+                int wantMode = wantMips16 ? 1 : 0;
+                if (wantMode != currentIsaMode_) {
+                    currentIsaMode_ = wantMode;
+                    contextTable_[currentAddr] = wantMode;
+                    if (disassembler) disassembler->setMode(wantMode);
+                }
+            }
+
             DisassembledInstruction di = disassembler->disassembleOne(bytes, currentAddr);
             if (di.length <= 0) break;
 
@@ -260,9 +289,9 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
             listing->addInstruction(inst);
             ++totalInstructions;
 
-            // MIPS16e / microMIPS context-based ISA mode switching (GP-6766)
+            // Compressed-ISA context-based mode switching (GP-6766)
             if (isMips_ && !di.mnemonic.empty()) {
-                handleMips16eContextSwitch(di, disassembler.get(), currentAddr);
+                handleIsaContextSwitch(di, disassembler.get(), currentAddr);
             }
 
             if (totalInstructions >= nextLogInstr) {

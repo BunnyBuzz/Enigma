@@ -191,8 +191,19 @@ add_test(NAME enigma_test_elf_compiler_detect COMMAND enigma_test_elf_compiler_d
 add_executable(enigma_test_macho_loader tests/test_macho_loader.cpp)
 target_link_libraries(enigma_test_macho_loader PRIVATE enigma_engine)
 target_compile_definitions(enigma_test_macho_loader PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
-enigma_apply_warning_policy(enigma_test_macho_loader)
 add_test(NAME enigma_test_macho_loader COMMAND enigma_test_macho_loader)
+
+add_executable(enigma_test_mips16_context tests/test_mips16_context.cpp)
+target_link_libraries(enigma_test_mips16_context PRIVATE enigma_engine)
+target_compile_definitions(enigma_test_mips16_context PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
+enigma_apply_warning_policy(enigma_test_mips16_context)
+add_test(NAME enigma_test_mips16_context COMMAND enigma_test_mips16_context)
+
+add_executable(enigma_test_elf_dyn_overlap tests/test_elf_dyn_overlap.cpp)
+target_link_libraries(enigma_test_elf_dyn_overlap PRIVATE enigma_engine)
+target_compile_definitions(enigma_test_elf_dyn_overlap PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
+enigma_apply_warning_policy(enigma_test_elf_dyn_overlap)
+add_test(NAME enigma_test_elf_dyn_overlap COMMAND enigma_test_elf_dyn_overlap)
 
 add_executable(enigma_test_headless_suite tests/test_headless_suite.cpp)
 target_link_libraries(enigma_test_headless_suite PRIVATE enigma_engine)

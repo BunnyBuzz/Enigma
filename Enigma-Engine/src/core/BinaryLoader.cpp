@@ -340,9 +340,23 @@ public:
                 hdrEnd = std::max(hdrEnd, e_shoff + static_cast<uint64_t>(e_shnum) * e_shentsize);
             }
             if (hdrEnd > rawData_.size()) hdrEnd = rawData_.size();
-            if (hdrEnd > 64) {
+            // Clip to the first allocated section: DYN binaries map sections
+            // at low addresses that overlap the header tables, and overlapping
+            // blocks make getBlock() return the read-only header block for
+            // section writes ("Writing is not allowed"). Mirrors the PE path,
+            // which already clips to the first section (hdrSize above).
+            uint64_t firstAllocStart = UINT64_MAX;
+            for (const auto& section : sections_) {
+                if (section.virtualSize == 0 || !section.isAllocated) continue;
+                if (section.virtualAddress < firstAllocStart)
+                    firstAllocStart = section.virtualAddress;
+            }
+            uint64_t hdrSize = hdrEnd;
+            if (firstAllocStart != UINT64_MAX && firstAllocStart < hdrSize)
+                hdrSize = firstAllocStart;
+            if (hdrSize > 64) {
                 std::vector<uint8_t> hdrBytes(rawData_.begin(),
-                                              rawData_.begin() + static_cast<std::ptrdiff_t>(hdrEnd));
+                                              rawData_.begin() + static_cast<std::ptrdiff_t>(hdrSize));
                 Address hdrAddr(ramSpace, 0);
                 auto* hdrBlock = mem->createInitializedBlock(
                     "ELF_HEADER", hdrAddr, static_cast<long long>(hdrBytes.size()), false);
@@ -386,6 +400,11 @@ public:
         int unnamedCounter = 0;
         for (const auto& section : sections_) {
             if (section.virtualSize == 0) continue;
+            // Non-allocated ELF sections (.symtab, .pdr, .comment...) live at
+            // file offsets that collide with the memory image; mapping them
+            // creates overlapping blocks that shadow real sections in
+            // getBlock() and break writes. Ghidra only maps SHF_ALLOC.
+            if (formatName_ == "ELF" && !section.isAllocated) continue;
             // Sanitize section name: empty names and control characters are rejected
             // by the memory block name validation.  Log and fix them here so the
             // caller gets a clear error message and the load proceeds.
@@ -446,6 +465,16 @@ public:
                 Address endAddr(ramSpace, static_cast<int64_t>(bodyEnd));
                 AddressSet body(entryAddr, endAddr);
                 funcMgr->createFunction(sym.name, entryAddr, body, SourceType::IMPORTED);
+                // GP-6766: STO_MIPS16 functions decode with 16-bit tables
+                // (SLEIGH MIPS16e via ISA_MODE context; native Capstone
+                // decodes them as microMIPS - lengths plausible, names differ).
+                // st_size may be 0 (hand-written asm); still record a minimal
+                // 2-byte range so at least the entry decodes correctly.
+                if (sym.isMips16) {
+                    uint64_t rangeEnd = sym.size > 0 ? sym.address + sym.size
+                                                     : sym.address + 2;
+                    program->addMips16Range(sym.address, rangeEnd);
+                }
             }
         }
 
@@ -1088,6 +1117,7 @@ private:
             section.isReadable = (flags & 0x2) != 0;
             section.isWritable = (flags & 0x1) != 0;
             section.isExecutable = (flags & 0x4) != 0;
+            section.isAllocated = (flags & 0x2) != 0;
 
             sectionNames[i] = nameIdx;
             sections_.push_back(section);
@@ -1130,6 +1160,7 @@ private:
             section.isReadable = (flags & 0x2) != 0;
             section.isWritable = (flags & 0x1) != 0;
             section.isExecutable = (flags & 0x4) != 0;
+            section.isAllocated = (flags & 0x2) != 0;
 
             sectionNames[i] = nameIdx;
             sections_.push_back(section);
@@ -1191,6 +1222,7 @@ private:
                 uint8_t info = rawData_[symOff + 12];
                 uint8_t bind = info >> 4;
                 uint8_t stype = info & 0xF;
+                uint8_t stOther = rawData_[symOff + 13];
                 uint16_t shndx = elf16(symOff + 14);
 
                 if (nameIdx == 0 || value == 0) continue;
@@ -1209,6 +1241,10 @@ private:
                 // GP-7057: external iff GLOBAL or WEAK binding and SHN_UNDEF section index
                 // (ElfSymbol.isExternal disregards symbol type, value and size)
                 sym.isExternal = (bind == 1 || bind == 2) && shndx == 0;
+                // GP-6766: MIPS16e functions carry STO_MIPS16 (0xF0) in st_other.
+                // Gate on MIPS: st_other high bits mean other things elsewhere.
+                sym.isMips16 = (arch_ == "MIPS") && (stype == 2) && shndx != 0 &&
+                               ((stOther & 0xF0) == 0xF0);
                 symbols_.push_back(sym);
             }
         }
@@ -1247,6 +1283,7 @@ private:
                 uint8_t info = rawData_[symOff + 4];
                 uint8_t bind = info >> 4;
                 uint8_t stype = info & 0xF;
+                uint8_t stOther = rawData_[symOff + 5];
                 uint16_t shndx = elf16(symOff + 6);
                 uint64_t value = elf64(symOff + 8);
                 uint64_t size = elf64(symOff + 16);
@@ -1267,6 +1304,9 @@ private:
                 // GP-7057: external iff GLOBAL or WEAK binding and SHN_UNDEF section index
                 // (ElfSymbol.isExternal disregards symbol type, value and size)
                 sym.isExternal = (bind == 1 || bind == 2) && shndx == 0;
+                // GP-6766: see parseELF32Symbols (STO_MIPS16 st_other flag).
+                sym.isMips16 = (arch_ == "MIPS") && (stype == 2) && shndx != 0 &&
+                               ((stOther & 0xF0) == 0xF0);
                 symbols_.push_back(sym);
             }
         }

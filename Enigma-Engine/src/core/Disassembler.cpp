@@ -21,9 +21,10 @@
 #include <capstone/arm64.h>
 #include <unordered_map>
 
-// Capstone 4.x defines CS_MODE_MIPS16; provide fallback if missing
-#ifndef CS_MODE_MIPS16
-#define CS_MODE_MIPS16 0x10
+// This Capstone has no MIPS16e mode: for MIPS, bit 0x10 is CS_MODE_MICRO
+// (microMIPS). Provide a fallback for older headers that lack the name.
+#ifndef CS_MODE_MICRO
+#define CS_MODE_MICRO 0x10
 #endif
 
 namespace ghidra {
@@ -92,7 +93,7 @@ static void extractOperandScalars(const cs_insn* insn, DisassembledInstruction& 
             } else if (op.type == MIPS_OP_MEM) {
                 bool hasBase = (op.mem.base != MIPS_REG_INVALID);
                 if (op.mem.base == MIPS_REG_PC) {
-                    // PC-relative (e.g. mips16/gp-relative variants resolve via
+                    // PC-relative (e.g. microMIPS/gp-relative variants resolve via
                     // linker slots; plain PC-relative loads use this base).
                     uint64_t target = insn->address + insn->size + static_cast<uint64_t>(op.mem.disp);
                     out.push_back(std::make_unique<Scalar>(64, static_cast<int64_t>(target)));
@@ -252,6 +253,7 @@ public:
         cs_option(handle_, CS_OPT_DETAIL, CS_OPT_ON);
         arch_ = architecture;
         csArch_ = csArch;
+        bigEndian_ = bigEndian;
         return true;
     }
 
@@ -396,7 +398,8 @@ public:
             csMode = CS_MODE_ARM;
         } else if (arch_.find("mips") != std::string::npos || arch_.find("MIPS") != std::string::npos) {
             csMode = (bitness_ == 64) ? CS_MODE_MIPS64 : CS_MODE_MIPS32;
-            if (newMode == 1) csMode = static_cast<cs_mode>(csMode | CS_MODE_MIPS16);
+            if (bigEndian_) csMode = static_cast<cs_mode>(csMode | CS_MODE_BIG_ENDIAN);
+            if (newMode == 1) csMode = static_cast<cs_mode>(csMode | CS_MODE_MICRO);
         } else if (arch_.find("ppc") != std::string::npos || arch_.find("PowerPC") != std::string::npos) {
             csMode = (bitness_ == 64) ? CS_MODE_64 : CS_MODE_32;
         }
@@ -413,6 +416,7 @@ private:
     cs_arch csArch_;
     int alignment_;
     int bitness_;
+    bool bigEndian_ = false;
 };
 
 void Disassembler::setProgram(ProgramDB* program) {

@@ -1,7 +1,7 @@
 void __cdecl entry()
 {
     code *UNRECOVERED_JUMPTABLE;
-    UNRECOVERED_JUMPTABLE = (code *)__libc_init();
+    UNRECOVERED_JUMPTABLE = (code *)func_0x14d0();
     if (UNRECOVERED_JUMPTABLE != (code *)0x0) {
                     
                     
@@ -13,7 +13,53 @@ void __cdecl entry()
 
 
 
-void __cdecl ptrace()
+void __cdecl func_0x14d0()
+{
+                    
+                    
+    (*___libc_init)();
+    return;
+}
+
+
+
+void __cdecl func_0x12ab()
+{
+                    
+    halt_unimplemented_0x12ab();
+}
+
+void __cdecl func_0x14b0()
+{
+                    
+                    
+    (*ptr_0x5790)();
+    return;
+}
+
+
+
+void __cdecl func_0x14e0()
+{
+                    
+                    
+    (*___cxa_atexit)();
+    return;
+}
+
+
+
+void __cdecl func_0x14f0()
+{
+                    
+                    
+    (*___register_atfork)();
+    return;
+}
+
+
+
+void __cdecl func_0x1500()
 {
                     
                     
@@ -23,7 +69,7 @@ void __cdecl ptrace()
 
 
 
-void __cdecl syscall()
+void __cdecl func_0x1510()
 {
                     
                     
@@ -33,7 +79,7 @@ void __cdecl syscall()
 
 
 
-void __cdecl getenv()
+void __cdecl func_0x1520()
 {
                     
                     
@@ -43,7 +89,17 @@ void __cdecl getenv()
 
 
 
-void __cdecl write()
+void __cdecl func_0x1530()
+{
+                    
+                    
+    (*___stack_chk_fail)();
+    return;
+}
+
+
+
+void __cdecl func_0x1540()
 {
                     
                     
@@ -53,29 +109,37 @@ void __cdecl write()
 
 
 
-int32_t __cdecl scanf(char *param_1,...)
+void __cdecl func_0x1550()
 {
-    int32_t v_1;
                     
                     
-    v_1 = (*_scanf)((int32_t)param_1);
-    return v_1;
+    (*___read_chk)();
+    return;
 }
 
 
 
-void * __cdecl malloc(uint64_t param_1)
+void __cdecl func_0x1560()
 {
-    void *v_1;
                     
                     
-    v_1 = (void *)(*_malloc)();
-    return v_1;
+    (*_scanf)();
+    return;
 }
 
 
 
-void __cdecl free(void *param_1)
+void __cdecl func_0x1570()
+{
+                    
+                    
+    (*_malloc)();
+    return;
+}
+
+
+
+void __cdecl func_0x1580()
 {
                     
                     
@@ -85,18 +149,27 @@ void __cdecl free(void *param_1)
 
 
 
-int32_t __cdecl setvbuf(void *param_1, char *param_2, int32_t param_3, uint64_t param_4)
+void __cdecl func_0x1590()
 {
-    int32_t v_1;
                     
                     
-    v_1 = (*_setvbuf)((int32_t)param_1,param_2,param_3);
-    return v_1;
+    (*___write_chk)();
+    return;
 }
 
 
 
-void __cdecl prctl()
+void __cdecl func_0x15a0()
+{
+                    
+                    
+    (*_setvbuf)();
+    return;
+}
+
+
+
+void __cdecl func_0x15b0()
 {
                     
                     
