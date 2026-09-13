@@ -11,6 +11,7 @@
 #include <ghidra/SignatureSource.h>
 #include <ghidra/SymbolTable.h>
 #include <ghidra/StructureDataType.h>
+#include <ghidra/UnionDataType.h>
 #include <ghidra/VariableStorage.h>
 
 namespace ghidra {
@@ -47,11 +48,16 @@ static void setCommentOnCodeUnit(CodeUnit* cu, CommentType type, const std::stri
 
 static DataType* createDataTypeForKind(const std::string& name, const CategoryPath& path,
                                        int size, int typeKind, DataTypeManager* dtm) {
+    // Kind encoding is internal to Create/DeleteDataTypeEvent (no external
+    // producers yet): 0 = struct, 1 = enum, 2 = union. Typedef/pointer/array
+    // need base types the (name, path, size, kind) tuple cannot express.
     switch (typeKind) {
     case 0:
         return new StructureDataType(path, name, size, dtm);
     case 1:
         return new EnumDataType(path, name, size, dtm);
+    case 2:
+        return new UnionDataType(path, name, dtm);
     default:
         return new StructureDataType(path, name, size, dtm);
     }

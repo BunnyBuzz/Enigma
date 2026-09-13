@@ -26,6 +26,11 @@ static bool readMetaFile(const std::string& path, std::vector<uint8_t>& buf) {
     return fb::VerifyProjectMetadataBuffer(verifier);
 }
 
+// Null-safe flatbuffer string extraction: corrupt metadata must not crash.
+static std::string fbStr(const flatbuffers::String* s) {
+    return s ? s->str() : std::string();
+}
+
 bool BranchManager::createBranch(const std::string& repoPath,
                                   const std::string& branchName,
                                   const std::string& commitId) {
@@ -42,18 +47,18 @@ bool BranchManager::createBranch(const std::string& repoPath,
     // Check if branch already exists
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            if (bp->name()->str() == branchName) return false;
+            if (fbStr(bp->name()) == branchName) return false;
         }
     }
 
     // Rebuild with new branch added
     flatbuffers::FlatBufferBuilder builder(1024);
-    auto nameStr = builder.CreateString(meta->project_name()->str());
-    auto binStr = builder.CreateString(meta->binary_name()->str());
+    auto nameStr = builder.CreateString(fbStr(meta->project_name()));
+    auto binStr = builder.CreateString(fbStr(meta->binary_name()));
     auto shaStr = meta->binary_sha256() ? builder.CreateString(meta->binary_sha256()->str()) : 0;
     auto langStr = meta->language_id() ? builder.CreateString(meta->language_id()->str()) : 0;
     auto compStr = meta->compiler_spec_id() ? builder.CreateString(meta->compiler_spec_id()->str()) : 0;
-    auto curBranchStr = builder.CreateString(meta->current_branch()->str());
+    auto curBranchStr = builder.CreateString(fbStr(meta->current_branch()));
     uint64_t created = meta->created_timestamp();
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
 
@@ -61,8 +66,8 @@ bool BranchManager::createBranch(const std::string& repoPath,
     std::vector<flatbuffers::Offset<fb::BranchPointer>> branchOffsets;
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            auto n = builder.CreateString(bp->name()->str());
-            auto h = builder.CreateString(bp->head_commit_id()->str());
+            auto n = builder.CreateString(fbStr(bp->name()));
+            auto h = builder.CreateString(fbStr(bp->head_commit_id()));
             branchOffsets.push_back(fb::CreateBranchPointer(builder, n, h));
         }
     }
@@ -95,8 +100,8 @@ std::vector<BranchInfo> BranchManager::listBranches(const std::string& repoPath)
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
             BranchInfo info;
-            info.name = bp->name()->str();
-            info.headCommitId = bp->head_commit_id()->str();
+            info.name = fbStr(bp->name());
+            info.headCommitId = fbStr(bp->head_commit_id());
             result.push_back(info);
         }
     }
@@ -113,13 +118,13 @@ bool BranchManager::deleteBranch(const std::string& repoPath,
     auto* meta = fb::GetProjectMetadata(buf.data());
 
     // Cannot delete current branch
-    if (meta->current_branch()->str() == branchName) return false;
+    if (fbStr(meta->current_branch()) == branchName) return false;
 
     // Find and remove the branch
     bool found = false;
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            if (bp->name()->str() == branchName) {
+            if (fbStr(bp->name()) == branchName) {
                 found = true;
                 break;
             }
@@ -128,21 +133,21 @@ bool BranchManager::deleteBranch(const std::string& repoPath,
     if (!found) return false;
 
     flatbuffers::FlatBufferBuilder builder(1024);
-    auto nameStr = builder.CreateString(meta->project_name()->str());
-    auto binStr = builder.CreateString(meta->binary_name()->str());
+    auto nameStr = builder.CreateString(fbStr(meta->project_name()));
+    auto binStr = builder.CreateString(fbStr(meta->binary_name()));
     auto shaStr = meta->binary_sha256() ? builder.CreateString(meta->binary_sha256()->str()) : 0;
     auto langStr = meta->language_id() ? builder.CreateString(meta->language_id()->str()) : 0;
     auto compStr = meta->compiler_spec_id() ? builder.CreateString(meta->compiler_spec_id()->str()) : 0;
-    auto curBranchStr = builder.CreateString(meta->current_branch()->str());
+    auto curBranchStr = builder.CreateString(fbStr(meta->current_branch()));
     uint64_t created = meta->created_timestamp();
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
 
     std::vector<flatbuffers::Offset<fb::BranchPointer>> branchOffsets;
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            if (bp->name()->str() == branchName) continue;
-            auto n = builder.CreateString(bp->name()->str());
-            auto h = builder.CreateString(bp->head_commit_id()->str());
+            if (fbStr(bp->name()) == branchName) continue;
+            auto n = builder.CreateString(fbStr(bp->name()));
+            auto h = builder.CreateString(fbStr(bp->head_commit_id()));
             branchOffsets.push_back(fb::CreateBranchPointer(builder, n, h));
         }
     }
@@ -172,7 +177,7 @@ bool BranchManager::switchBranch(const std::string& repoPath,
     bool found = false;
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            if (bp->name()->str() == branchName) {
+            if (fbStr(bp->name()) == branchName) {
                 found = true;
                 break;
             }
@@ -181,11 +186,11 @@ bool BranchManager::switchBranch(const std::string& repoPath,
     if (!found) return false;
 
     // Already on this branch
-    if (meta->current_branch()->str() == branchName) return true;
+    if (fbStr(meta->current_branch()) == branchName) return true;
 
     flatbuffers::FlatBufferBuilder builder(1024);
-    auto nameStr = builder.CreateString(meta->project_name()->str());
-    auto binStr = builder.CreateString(meta->binary_name()->str());
+    auto nameStr = builder.CreateString(fbStr(meta->project_name()));
+    auto binStr = builder.CreateString(fbStr(meta->binary_name()));
     auto shaStr = meta->binary_sha256() ? builder.CreateString(meta->binary_sha256()->str()) : 0;
     auto langStr = meta->language_id() ? builder.CreateString(meta->language_id()->str()) : 0;
     auto compStr = meta->compiler_spec_id() ? builder.CreateString(meta->compiler_spec_id()->str()) : 0;
@@ -196,8 +201,8 @@ bool BranchManager::switchBranch(const std::string& repoPath,
     std::vector<flatbuffers::Offset<fb::BranchPointer>> branchOffsets;
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            auto n = builder.CreateString(bp->name()->str());
-            auto h = builder.CreateString(bp->head_commit_id()->str());
+            auto n = builder.CreateString(fbStr(bp->name()));
+            auto h = builder.CreateString(fbStr(bp->head_commit_id()));
             branchOffsets.push_back(fb::CreateBranchPointer(builder, n, h));
         }
     }
@@ -220,7 +225,7 @@ std::string BranchManager::getCurrentBranch(const std::string& repoPath) {
     std::vector<uint8_t> buf;
     if (!readMetaFile(metaPath, buf)) return "";
     auto* meta = fb::GetProjectMetadata(buf.data());
-    return meta->current_branch()->str();
+    return fbStr(meta->current_branch());
 }
 
 std::string BranchManager::getBranchCommit(const std::string& repoPath,
@@ -231,8 +236,8 @@ std::string BranchManager::getBranchCommit(const std::string& repoPath,
     auto* meta = fb::GetProjectMetadata(buf.data());
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            if (bp->name()->str() == branchName) {
-                return bp->head_commit_id()->str();
+            if (fbStr(bp->name()) == branchName) {
+                return fbStr(bp->head_commit_id());
             }
         }
     }
@@ -247,7 +252,7 @@ bool BranchManager::branchExists(const std::string& repoPath,
     auto* meta = fb::GetProjectMetadata(buf.data());
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            if (bp->name()->str() == branchName) return true;
+            if (fbStr(bp->name()) == branchName) return true;
         }
     }
     return false;
@@ -268,7 +273,7 @@ bool BranchManager::advanceBranch(const std::string& repoPath,
     bool found = false;
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            if (bp->name()->str() == branchName) {
+            if (fbStr(bp->name()) == branchName) {
                 found = true;
                 break;
             }
@@ -277,20 +282,20 @@ bool BranchManager::advanceBranch(const std::string& repoPath,
     if (!found) return false;
 
     flatbuffers::FlatBufferBuilder builder(1024);
-    auto nameStr = builder.CreateString(meta->project_name()->str());
-    auto binStr = builder.CreateString(meta->binary_name()->str());
+    auto nameStr = builder.CreateString(fbStr(meta->project_name()));
+    auto binStr = builder.CreateString(fbStr(meta->binary_name()));
     auto shaStr = meta->binary_sha256() ? builder.CreateString(meta->binary_sha256()->str()) : 0;
     auto langStr = meta->language_id() ? builder.CreateString(meta->language_id()->str()) : 0;
     auto compStr = meta->compiler_spec_id() ? builder.CreateString(meta->compiler_spec_id()->str()) : 0;
-    auto curBranchStr = builder.CreateString(meta->current_branch()->str());
+    auto curBranchStr = builder.CreateString(fbStr(meta->current_branch()));
     uint64_t created = meta->created_timestamp();
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
 
     std::vector<flatbuffers::Offset<fb::BranchPointer>> branchOffsets;
     if (meta->branches()) {
         for (auto* bp : *meta->branches()) {
-            auto n = builder.CreateString(bp->name()->str());
-            std::string headId = (bp->name()->str() == branchName) ? commitId : bp->head_commit_id()->str();
+            auto n = builder.CreateString(fbStr(bp->name()));
+            std::string headId = (fbStr(bp->name()) == branchName) ? commitId : fbStr(bp->head_commit_id());
             auto h = builder.CreateString(headId);
             branchOffsets.push_back(fb::CreateBranchPointer(builder, n, h));
         }

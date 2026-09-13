@@ -47,6 +47,7 @@ public:
     DataType* addDataType(DataType* dt, DataTypeConflictHandler* handler) override;
     DataType* addDataTypeWithId(DataType* dt, int64_t id);
     void removeDataType(DataType* dt);
+    bool remove(DataType* dt) override;
     void clearAllDataTypes();
     int64_t getNextId();
     int64_t getDataTypeId(DataType* dt) const;

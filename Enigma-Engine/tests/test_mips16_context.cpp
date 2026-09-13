@@ -79,6 +79,17 @@ static const uint8_t kMips16TestElf[] = {
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+static const uint8_t kMips16NoFlagElf[] = {
+    0x7f, 0x45, 0x4c, 0x46, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x40, 0x00, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x34, 0x00, 0x20, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x00, 0x0c, 0x00, 0x00, 0x00,
+    0x0c, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
+    0x00, 0x04, 0x01, 0x04, 0x02, 0x04, 0x03, 0x04, 0x04, 0x04, 0xa0, 0xe8,
+};
+
 int main() {
     std::cout << "=== MIPS16e Context Test (GP-6766) ===" << std::endl;
 
@@ -174,6 +185,63 @@ int main() {
         TEST("native len 2 @40001C", lenAt(0x40001C) == 2);
         TEST("native len 2 @40001E", lenAt(0x40001E) == 2);
         TEST("native len 4 @400020", lenAt(0x400020) == 4);
+    }
+
+    // 16e language variants (mips32_16e.pspec / mips64_16e.pspec): a program
+    // with NO ranges must still decode 16-bit under MIPS:LE:32:16e via the
+    // pspec ISA_MODE=1 default, while the default variant must not.
+    {
+        const std::string tmp2 = "test_mips16_16e_tmp.elf";
+        {
+            std::ofstream out(tmp2, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(kMips16NoFlagElf),
+                      sizeof(kMips16NoFlagElf));
+        }
+        auto loader2 = ghidra::createLoader();
+        TEST("16e elf loads", loader2 && loader2->load(tmp2));
+        auto* prog2 = new ghidra::ProgramDB("mips16e", nullptr, nullptr);
+        auto* af2 = dynamic_cast<ghidra::ProgramAddressFactory*>(prog2->getAddressFactory());
+        auto* ram2 = new ghidra::GenericAddressSpace("ram", 64,
+            ghidra::AddressSpace::TYPE_RAM, 1);
+        af2->addAddressSpace(ram2);
+        af2->setDefaultSpace(ram2);
+        TEST("16e populate ok", loader2->populateProgram(prog2));
+        TEST("16e no ranges", prog2->getMips16Ranges().empty());
+
+        ghidra::DecompInterface di16;
+        prog2->setLanguageID(ghidra::LanguageID("MIPS:LE:32:16e"));
+        TEST("16e decomp opens", di16.openProgram(prog2));
+        if (di16.isOpen()) {
+            bool all2 = true;
+            for (uint64_t a = 0x400000; a < 0x40000C; a += 2)
+                all2 = all2 && (di16.instructionLengthAt(a) == 2);
+            TEST("16e len 2 throughout", all2);
+        }
+
+        // Same bytes under the default variant must NOT decode 16-bit:
+        // proves the 16e behavior comes from the pspec default.
+        ghidra::DecompInterface di32;
+        prog2->setLanguageID(ghidra::LanguageID("MIPS:LE:32:default"));
+        TEST("default decomp opens", di32.openProgram(prog2));
+        if (di32.isOpen()) {
+            bool any2 = false;
+            for (uint64_t a = 0x400000; a < 0x40000C && !any2; a += 2) {
+                try { any2 = (di32.instructionLengthAt(a) == 2); }
+                catch (...) { /* undecodable counts as not-2 */ }
+            }
+            TEST("default not len 2", !any2);
+        }
+
+        // The other new pspec files must at least load an arch.
+        prog2->setLanguageID(ghidra::LanguageID("MIPS:BE:32:16e"));
+        ghidra::DecompInterface diBE;
+        TEST("be16 decomp opens", diBE.openProgram(prog2));
+        prog2->setLanguageID(ghidra::LanguageID("MIPS:LE:64:16e"));
+        ghidra::DecompInterface di64;
+        TEST("le64 decomp opens", di64.openProgram(prog2));
+
+        delete prog2;
+        std::remove(tmp2.c_str());
     }
 
     delete prog;

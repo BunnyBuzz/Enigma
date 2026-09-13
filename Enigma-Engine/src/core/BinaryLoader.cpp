@@ -718,9 +718,11 @@ private:
 
         uint16_t magic = *reinterpret_cast<uint16_t*>(rawData_.data() + optHeaderOffset);
         if (magic == 0x10b) {
+            if (optHeaderSize < 32) return false;
             imageBase_ = *reinterpret_cast<uint32_t*>(rawData_.data() + optHeaderOffset + 28);
             entryPoint_ = imageBase_ + *reinterpret_cast<uint32_t*>(rawData_.data() + optHeaderOffset + 16);
         } else if (magic == 0x20b) {
+            if (optHeaderSize < 32) return false;
             imageBase_ = *reinterpret_cast<uint64_t*>(rawData_.data() + optHeaderOffset + 24);
             entryPoint_ = imageBase_ + *reinterpret_cast<uint32_t*>(rawData_.data() + optHeaderOffset + 16);
         }
@@ -1014,6 +1016,7 @@ private:
 
             uint32_t nameRVA = *reinterpret_cast<uint32_t*>(rawData_.data() + namesOffset + i * 4);
             uint16_t ordinal = *reinterpret_cast<uint16_t*>(rawData_.data() + ordinalsOffset + i * 2);
+            if (functionsOffset + (uint64_t)ordinal * 4 + 4 > rawData_.size()) continue;
             uint32_t funcRVA = *reinterpret_cast<uint32_t*>(rawData_.data() + functionsOffset + ordinal * 4);
 
             std::string name = readStringAtRVA(nameRVA);
@@ -1130,7 +1133,11 @@ private:
             for (size_t i = 0; i < sections_.size(); i++) {
                 uint32_t nameOff = strOffset + sectionNames[i];
                 if (nameOff < rawData_.size()) {
-                    sections_[i].name = reinterpret_cast<const char*>(rawData_.data() + nameOff);
+                    size_t maxLen = rawData_.size() - nameOff;
+                    size_t len = 0;
+                    while (len < maxLen && rawData_[nameOff + len] != 0) ++len;
+                    sections_[i].name.assign(
+                        reinterpret_cast<const char*>(rawData_.data() + nameOff), len);
                 }
             }
         }
@@ -1172,9 +1179,8 @@ private:
 
             for (size_t i = 0; i < sections_.size(); i++) {
                 uint64_t nameOff = strOffset + sectionNames[i];
-                if (nameOff < rawData_.size()) {
-                    sections_[i].name = reinterpret_cast<const char*>(rawData_.data() + nameOff);
-                }
+                std::string name = readStringAtOffset(nameOff);
+                if (!name.empty()) sections_[i].name = name;
             }
         }
     }
@@ -1227,10 +1233,7 @@ private:
 
                 if (nameIdx == 0 || value == 0) continue;
 
-                std::string name;
-                if (strTabOffset + nameIdx < rawData_.size()) {
-                    name = reinterpret_cast<const char*>(rawData_.data() + strTabOffset + nameIdx);
-                }
+                std::string name = readStringAtOffset(strTabOffset + nameIdx);
                 if (name.empty()) continue;
 
                 SymbolInfo sym{};
@@ -1290,10 +1293,7 @@ private:
 
                 if (nameIdx == 0 || value == 0) continue;
 
-                std::string name;
-                if (strTabOffset + nameIdx < rawData_.size()) {
-                    name = reinterpret_cast<const char*>(rawData_.data() + strTabOffset + nameIdx);
-                }
+                std::string name = readStringAtOffset(strTabOffset + nameIdx);
                 if (name.empty()) continue;
 
                 SymbolInfo sym{};
@@ -1998,8 +1998,8 @@ private:
             uint64_t e = symOff + j * tags.syment;
             if (e + (bitness_ == 32 ? 16 : 24) > rawData_.size()) break;
             uint32_t nameIdx = elf32(e);
-            if (nameIdx != 0 && strOff + nameIdx < rawData_.size()) {
-                symNames[j] = reinterpret_cast<const char*>(rawData_.data() + strOff + nameIdx);
+            if (nameIdx != 0) {
+                symNames[j] = readStringAtOffset(strOff + nameIdx);
             }
         }
 
@@ -2029,9 +2029,7 @@ private:
                 size = elf64(e + 16);
             }
             if (nameIdx == 0 || value == 0) continue;
-            if (strOff + nameIdx >= rawData_.size()) continue;
-            std::string name =
-                reinterpret_cast<const char*>(rawData_.data() + strOff + nameIdx);
+            std::string name = readStringAtOffset(strOff + nameIdx);
             if (name.empty()) continue;
             SymbolInfo sym{};
             sym.name = name;
@@ -2122,7 +2120,16 @@ private:
     bool parseFatMachO() {
         if (rawData_.size() < 12) return false;
 
-        uint32_t nfat_arch = *reinterpret_cast<uint32_t*>(rawData_.data() + 4);
+        // fat_header / fat_arch are big-endian regardless of host or payload.
+        auto swap32 = [](uint32_t v) {
+            return ((v & 0xFFu) << 24) | ((v & 0xFF00u) << 8) |
+                   ((v & 0xFF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
+        };
+        auto fat32 = [&](size_t off) {
+            return swap32(*reinterpret_cast<uint32_t*>(rawData_.data() + off));
+        };
+
+        uint32_t nfat_arch = fat32(4);
         if (nfat_arch == 0 || nfat_arch > 16) return false;
 
         // Architecture preference order
@@ -2140,8 +2147,11 @@ private:
 
         // Start with the first arch as fallback
         if (nfat_arch > 0) {
-            bestOffset = *reinterpret_cast<uint32_t*>(rawData_.data() + 8);
-            bestSize = *reinterpret_cast<uint32_t*>(rawData_.data() + 12);
+            if (8 + 20 > rawData_.size()) return false;
+            bestOffset = fat32(8);
+            bestSize = fat32(12);
+            if (bestOffset + bestSize > rawData_.size() || bestOffset == 0 || bestSize == 0)
+                return false;
             found = true;
         }
 
@@ -2150,11 +2160,11 @@ private:
             uint32_t entryOffset = 8 + i * 20;
             if (entryOffset + 20 > rawData_.size()) break;
 
-            uint32_t cputype = *reinterpret_cast<uint32_t*>(rawData_.data() + entryOffset);
-            uint32_t offset = *reinterpret_cast<uint32_t*>(rawData_.data() + entryOffset + 8);
-            uint32_t size = *reinterpret_cast<uint32_t*>(rawData_.data() + entryOffset + 12);
+            uint32_t cputype = fat32(entryOffset);
+            uint32_t offset = fat32(entryOffset + 8);
+            uint32_t size = fat32(entryOffset + 12);
 
-            if (offset + size > rawData_.size()) continue;
+            if (offset == 0 || size == 0 || offset + size > rawData_.size()) continue;
 
             // Check if this is our preferred architecture
             for (auto pref : PREFERRED_CPUS) {
@@ -2311,6 +2321,18 @@ private:
 
         bool ok = parseMachO();
         rawData_ = std::move(saved);
+        if (ok) {
+            // parseMachO ran on the carved slice, so every file offset it
+            // recorded is slice-relative. Rebase them to the full cache or
+            // all later reads (sections, fixups, indirect symbols) land in
+            // the wrong place.
+            uint64_t base = img->fileOffset;
+            for (auto& sec : sections_) sec.fileOffset += base;
+            for (auto& seg : machoSegments_) seg.fileoff += base;
+            if (chainedFixupsOff_ != 0) chainedFixupsOff_ += static_cast<uint32_t>(base);
+            if (dysymtabIndirectSymOffset_ != 0)
+                dysymtabIndirectSymOffset_ += static_cast<uint32_t>(base);
+        }
         return ok;
     }
 
@@ -2350,6 +2372,7 @@ private:
 
             switch (cmd) {
                 case 0x01: { // LC_SEGMENT
+                    if (cmdsize < 56) break;
                     uint32_t nsects = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 48);
                     uint32_t segFileOff = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 32);
                     uint32_t segFileSize = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 36);
@@ -2485,6 +2508,7 @@ private:
 
             switch (cmd) {
                 case 0x19: { // LC_SEGMENT_64
+                    if (cmdsize < 72) break;
                     uint32_t nsects = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 64);
                     uint64_t segFileOff = *reinterpret_cast<uint64_t*>(rawData_.data() + cmdOffset + 40);
                     uint64_t segFileSize = *reinterpret_cast<uint64_t*>(rawData_.data() + cmdOffset + 48);
@@ -3125,29 +3149,48 @@ private:
             if (line.empty() || line[0] != ':') continue;
             if (line.size() < 11) continue;
 
-            auto hexByte = [](const std::string& s, int pos) -> uint8_t {
-                return static_cast<uint8_t>(
-                    (std::stoi(s.substr(pos, 1), nullptr, 16) << 4) |
-                    std::stoi(s.substr(pos + 1, 1), nullptr, 16));
+            auto hexVal = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            auto hexByte = [&](int pos, uint8_t& out) -> bool {
+                if (pos < 0 || (size_t)pos + 1 >= line.size()) return false;
+                int hi = hexVal(line[(size_t)pos]);
+                int lo = hexVal(line[(size_t)pos + 1]);
+                if (hi < 0 || lo < 0) return false;
+                out = static_cast<uint8_t>((hi << 4) | lo);
+                return true;
             };
 
-            uint8_t byteCount = hexByte(line, 1);
-            uint16_t address = static_cast<uint16_t>(
-                (hexByte(line, 3) << 8) | hexByte(line, 5));
-            uint8_t recordType = hexByte(line, 7);
+            uint8_t byteCount = 0, b1 = 0, b2 = 0, recordType = 0;
+            if (!hexByte(1, byteCount) || !hexByte(3, b1) || !hexByte(5, b2) ||
+                !hexByte(7, recordType))
+                continue;
+            uint16_t address = static_cast<uint16_t>((b1 << 8) | b2);
+            // Record must actually contain the claimed payload.
+            if (line.size() < (size_t)9 + (size_t)byteCount * 2) continue;
 
             uint8_t checksum = 0;
+            bool badHex = false;
             for (size_t i = 1; i + 1 < line.size(); i += 2) {
-                checksum += hexByte(line, static_cast<int>(i));
+                uint8_t v = 0;
+                if (!hexByte(static_cast<int>(i), v)) { badHex = true; break; }
+                checksum += v;
             }
-            if (checksum != 0) continue;
+            if (badHex || checksum != 0) continue;
 
             switch (recordType) {
                 case 0x00: {
                     uint32_t addr = baseAddr + address;
                     for (uint8_t i = 0; i < byteCount; ++i) {
-                        uint8_t val = hexByte(line, 9 + i * 2);
+                        uint8_t val = 0;
+                        if (!hexByte(9 + i * 2, val)) break;
                         uint32_t targetAddr = addr + i;
+                        // Cap image at 256MB: crafted base addresses could
+                        // otherwise demand a ~4GB allocation.
+                        if (targetAddr >= 0x10000000u) return false;
                         if (targetAddr >= data.size()) data.resize(targetAddr + 1, 0);
                         data[targetAddr] = val;
                         minAddr = std::min(minAddr, targetAddr);
@@ -3156,8 +3199,18 @@ private:
                     break;
                 }
                 case 0x01: break;
-                case 0x02: baseAddr = static_cast<uint32_t>((hexByte(line, 9) << 8) | hexByte(line, 11)) << 4; break;
-                case 0x04: baseAddr = static_cast<uint32_t>((hexByte(line, 9) << 8) | hexByte(line, 11)) << 16; break;
+                case 0x02: {
+                    uint8_t hi = 0, lo = 0;
+                    if (!hexByte(9, hi) || !hexByte(11, lo)) break;
+                    baseAddr = (static_cast<uint32_t>((hi << 8) | lo)) << 4;
+                    break;
+                }
+                case 0x04: {
+                    uint8_t hi = 0, lo = 0;
+                    if (!hexByte(9, hi) || !hexByte(11, lo)) break;
+                    baseAddr = (static_cast<uint32_t>((hi << 8) | lo)) << 16;
+                    break;
+                }
                 default: break;
             }
         }
@@ -3199,20 +3252,33 @@ private:
             if (line.empty() || line[0] != 'S') continue;
             if (line.size() < 4) continue;
 
-            auto hexByte = [](const std::string& s, int pos) -> uint8_t {
-                return static_cast<uint8_t>(
-                    (std::stoi(s.substr(pos, 1), nullptr, 16) << 4) |
-                    std::stoi(s.substr(pos + 1, 1), nullptr, 16));
+            auto hexVal = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            auto hexByte = [&](int pos, uint8_t& out) -> bool {
+                if (pos < 0 || (size_t)pos + 1 >= line.size()) return false;
+                int hi = hexVal(line[(size_t)pos]);
+                int lo = hexVal(line[(size_t)pos + 1]);
+                if (hi < 0 || lo < 0) return false;
+                out = static_cast<uint8_t>((hi << 4) | lo);
+                return true;
             };
 
             char recordType = line[1];
-            uint8_t byteCount = hexByte(line, 2);
+            uint8_t byteCount = 0;
+            if (!hexByte(2, byteCount)) continue;
 
             uint8_t checksum = 0;
+            bool badHex = false;
             for (size_t i = 2; i + 1 < line.size(); i += 2) {
-                checksum += hexByte(line, static_cast<int>(i));
+                uint8_t v = 0;
+                if (!hexByte(static_cast<int>(i), v)) { badHex = true; break; }
+                checksum += v;
             }
-            if ((checksum & 0xFF) != 0xFF) continue;
+            if (badHex || (checksum & 0xFF) != 0xFF) continue;
 
             int addrSize = 0;
             switch (recordType) {
@@ -3222,19 +3288,29 @@ private:
                 case '3': case '7': addrSize = 4; break;
                 default: continue;
             }
+            // Record must contain its address field.
+            if (line.size() < (size_t)(4 + addrSize * 2)) continue;
 
             uint32_t address = 0;
+            bool badAddr = false;
             for (int i = 0; i < addrSize; ++i) {
-                address = (address << 8) | hexByte(line, 4 + i * 2);
+                uint8_t b = 0;
+                if (!hexByte(4 + i * 2, b)) { badAddr = true; break; }
+                address = (address << 8) | b;
             }
+            if (badAddr) continue;
 
             int dataStart = 4 + addrSize * 2;
             int dataBytes = byteCount - addrSize - 1;
+            if (dataBytes < 0 || line.size() < (size_t)(dataStart + dataBytes * 2)) continue;
 
             if (recordType == '1' || recordType == '2' || recordType == '3') {
                 for (int i = 0; i < dataBytes; ++i) {
-                    uint8_t val = hexByte(line, dataStart + i * 2);
+                    uint8_t val = 0;
+                    if (!hexByte(dataStart + i * 2, val)) break;
                     uint32_t targetAddr = address + i;
+                    // Cap image at 256MB (see parseIntelHex).
+                    if (targetAddr >= 0x10000000u) return false;
                     if (targetAddr >= data.size()) data.resize(targetAddr + 1, 0);
                     data[targetAddr] = val;
                     minAddr = std::min(minAddr, targetAddr);
@@ -3520,6 +3596,17 @@ private:
         size_t len = 0;
         while (len < maxLen && str[len] != '\0') len++;
 
+        return std::string(str, len);
+    }
+
+    // Bounded NUL-terminated string read from a raw file offset.
+    // Returns "" when offset is out of range; never reads past rawData_.
+    std::string readStringAtOffset(uint64_t offset) const {
+        if (offset >= rawData_.size()) return "";
+        const char* str = reinterpret_cast<const char*>(rawData_.data() + offset);
+        size_t maxLen = rawData_.size() - static_cast<size_t>(offset);
+        size_t len = 0;
+        while (len < maxLen && str[len] != '\0') len++;
         return std::string(str, len);
     }
 

@@ -21,9 +21,6 @@ public:
     void clear();
     void setProgram(ghidra::ProgramDB* program) { program_ = program; }
 
-signals:
-    void addressDoubleClicked(uint64_t addr);
-
 private:
     QColor colorForKind(TokenKind kind) const override;
     bool isBoldKind(TokenKind kind) const override;

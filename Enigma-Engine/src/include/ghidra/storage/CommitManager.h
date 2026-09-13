@@ -8,8 +8,8 @@ namespace ghidra {
 namespace storage {
 
 struct ChangeEntry {
-    fbschema::ChangeType type;
-    uint64_t             address;
+    fbschema::ChangeType type = static_cast<fbschema::ChangeType>(0);
+    uint64_t             address = 0;
     std::string          name;
     std::string          oldValue;
     std::string          newValue;
@@ -19,12 +19,12 @@ struct CommitInfo {
     std::string commitId;
     std::string parentCommitId;
     std::string snapshotSha256;
-    uint64_t    snapshotSize;
-    uint64_t    timestamp;
+    uint64_t    snapshotSize = 0;
+    uint64_t    timestamp = 0;
     std::string message;
     std::string branchName;
     std::string author;
-    int         changeCount;
+    int         changeCount = 0;
 };
 
 class CommitManager {

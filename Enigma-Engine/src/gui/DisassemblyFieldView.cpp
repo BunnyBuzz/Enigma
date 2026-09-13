@@ -2231,7 +2231,9 @@ void DisassemblyFieldView::buildGuardCfgSet() {
             if (!(dllChar & 0x4000)) continue; // No Guard CFG (IMAGE_DLLCHARACTERISTICS_GUARD_CF = 0x4000)
 
             // Guard CFG is enabled — all function entries are CFG targets
-            ghidra::FunctionIterator fit = program_->getFunctionManager()->getFunctions(true);
+            auto* funcMgr = program_->getFunctionManager();
+            if (!funcMgr) break;
+            ghidra::FunctionIterator fit = funcMgr->getFunctions(true);
             while (fit.hasNext()) {
                 auto* func = fit.next();
                 if (func) guardCfgTargets_.insert(func->getEntryPoint().getUnsignedOffset());

@@ -50,7 +50,7 @@ bool CramFsAnalyzer::getDefaultEnablement(Program* program) const {
 bool CramFsAnalyzer::added(Program* program, const AddressSetView& set,
                            TaskMonitor* monitor, MessageLog& log) {
     Address minAddress = program->getMinAddress();
-    bool isLE = !program->getLanguage()->isBigEndian();
+    bool isLE = program->getLanguageID().getIdAsString().find(":BE:") == std::string::npos;
 
     auto provider = std::make_unique<MemoryByteProvider>(program->getMemory(), minAddress, program);
     BinaryReader reader(std::move(provider), isLE);

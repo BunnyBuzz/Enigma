@@ -79,8 +79,9 @@ bool CFStringAnalyzer::added(Program* program, const AddressSetView& set,
     int lengthOffset = is64Bit ? 24 : 12;
 
     MemoryBufferImpl memBuffer(memory, cfstringBlock->getStart());
+    bool isBE = program->getLanguageID().getIdAsString().find(":BE:") != std::string::npos;
     const GhidraDataConverter* converter =
-        GhidraDataConverter::getConverter(program->getLanguage()->isBigEndian());
+        GhidraDataConverter::getConverter(isBE);
 
     Address currentAddr = cfstringBlock->getStart();
     const Address& endAddr = cfstringBlock->getEnd();
@@ -110,7 +111,9 @@ bool CFStringAnalyzer::added(Program* program, const AddressSetView& set,
             length = converter->getInt(&memBuffer, static_cast<int>(offset + lengthOffset));
         }
 
-        AddressSpace* defSpace = program->getLanguage()->getDefaultDataSpace();
+        AddressSpace* defSpace = program->getAddressFactory()
+            ? const_cast<AddressSpace*>(program->getAddressFactory()->getDefaultAddressSpace())
+            : nullptr;
         if (!defSpace) {
             currentAddr = currentAddr.add(recordLen);
             continue;

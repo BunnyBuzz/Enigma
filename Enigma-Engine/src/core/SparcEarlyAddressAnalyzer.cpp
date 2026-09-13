@@ -24,6 +24,9 @@ bool SparcEarlyAddressAnalyzer::added(Program* program, const AddressSetView& se
     if (!o7CallReturnAnalysis_) {
         return true;
     }
+    if (!program || !program->getLanguage() || !program->getListing()) {
+        return true;
+    }
 
     AddressSet unanalyzedSet(set);
     Register* linkReg = program->getLanguage()->getRegister("o7");

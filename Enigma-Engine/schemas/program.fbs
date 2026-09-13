@@ -207,6 +207,7 @@ table ProgramContextRecord {
     end_address: ulong = 0;
     mask: [ubyte];
     is_default: bool = false;
+    register_offset: long = 0;
 }
 
 table MetadataRecord {

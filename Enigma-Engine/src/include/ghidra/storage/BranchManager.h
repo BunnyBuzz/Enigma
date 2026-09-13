@@ -49,16 +49,6 @@ public:
     static bool advanceBranch(const std::string& repoPath,
                                const std::string& branchName,
                                const std::string& commitId);
-
-private:
-    /// Helper: read and verify project metadata, return parsed root.
-    /// Caller must keep buf alive while using root.
-    static const fbschema::ProjectMetadata* readMeta(
-        const std::string& repoPath, std::vector<uint8_t>& buf);
-
-    /// Helper: write project metadata.
-    static bool writeMeta(const std::string& repoPath,
-                           flatbuffers::FlatBufferBuilder& builder);
 };
 
 } // namespace storage

@@ -68,7 +68,6 @@
 #include <ghidra/patch/StringPatch.h>
 #include <ghidra/patch/InstructionPatch.h>
 #include <ghidra/patch/MetadataPatch.h>
-#include <ghidra/BinaryLoader.h>
 #include <ghidra/storage/WorkingSnapshot.h>
 #include <ghidra/storage/BranchManager.h>
 #include <ghidra/storage/CommitManager.h>
@@ -393,6 +392,9 @@ void MainWindow::createMenuBar() {
     auto* revertAllAct = patchMenu->addAction(tr("&Revert All Patches"));
     connect(revertAllAct, &QAction::triggered, this, &MainWindow::onRevertAllPatches);
 
+    auto* printListAct = patchMenu->addAction(tr("&Print Patch List to Console"));
+    connect(printListAct, &QAction::triggered, this, &MainWindow::onShowPatchList);
+
     auto* importMenu = menuBar()->addMenu(tr("&Import"));
     auto* importGhz = importMenu->addAction(tr("&Import from Ghidra..."));
     connect(importGhz, &QAction::triggered, this, &MainWindow::onImportGhidraProject);
@@ -700,7 +702,7 @@ void MainWindow::createDockWidgets() {
     });
     connect(stringTable_, &StringTableWidget::navigateRequested, this,
         [this](uint64_t addr) {
-            if (!disasmView_) return;
+            if (!disasmView_ || !hexView_) return;
             disasmView_->seek(addr);
             hexView_->seek(addr);
         });
@@ -717,11 +719,13 @@ void MainWindow::createDockWidgets() {
             this, &MainWindow::onClearIndex);
     connect(disasmView_, &DisassemblyFieldView::seekRequested,
             this, &MainWindow::onDisasmAddressDoubleClicked);
+    connect(disasmView_, &DisassemblyFieldView::addressJumpRequested,
+            this, &MainWindow::onDisasmAddressDoubleClicked);
     connect(decompView_, &DecompilerView::seekRequested,
             this, &MainWindow::onDecompAddressDoubleClicked);
     connect(patchList_, &PatchListWidget::navigateRequested, this,
         [this](uint64_t addr) {
-        if (!disasmView_) return;
+        if (!disasmView_ || !hexView_) return;
         disasmView_->seek(addr);
         hexView_->seek(addr);
     });
@@ -1118,8 +1122,9 @@ static FILE* logFile() {
     if (!g_log) {
         g_t0 = nowMs();
         const char* envPath = getenv("DBG_LOG");
-        const char* path = envPath ? envPath : "C:\\Users\\pc\\Desktop\\enigma_gui_debug.log";
-        g_log = fopen(path, "w");
+        std::string path = envPath ? envPath
+            : (QDir::tempPath() + "/enigma_gui_debug.log").toStdString();
+        g_log = fopen(path.c_str(), "w");
     }
     return g_log;
 }
@@ -1132,7 +1137,7 @@ static FILE* logFile() {
 void MainWindow::onOpenBinary() {
     QString path = QFileDialog::getOpenFileName(this, tr("Open Binary"),
         QString(),
-        tr("All Supported (*.exe *.dll *.elf *.so *.bin *.o *.obj *.lib *.a *.dylib *.macho *.pdb *.pdb *.hex *.srec *.ihex);;"
+        tr("All Supported (*.exe *.dll *.elf *.so *.bin *.o *.obj *.lib *.a *.dylib *.macho *.pdb *.hex *.srec *.ihex);;"
            "PE/COFF (*.exe *.dll *.obj *.lib *.pdb);;"
            "ELF (*.elf *.so *.o *.a);;"
            "Mach-O (*.dylib *.macho);;"

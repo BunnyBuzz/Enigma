@@ -55,7 +55,8 @@ bool ArtAnalyzer::added(Program* program, const AddressSetView& set,
     if (!artAddress.isValid()) return false;
 
     auto provider = std::make_unique<MemoryByteProvider>(program->getMemory(), artAddress, program);
-    BinaryReader reader(std::move(provider), !program->getLanguage()->isBigEndian());
+    bool isLE = program->getLanguageID().getIdAsString().find(":BE:") == std::string::npos;
+    BinaryReader reader(std::move(provider), isLE);
 
     // Validate magic
     std::string magic = reader.readAsciiString(0, 4);

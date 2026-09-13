@@ -1065,8 +1065,13 @@ if (!dt) continue;
             for (auto* fbCtx : *ctxRecords) {
                 std::string regName = fbCtx->register_name() ? fbCtx->register_name()->str() : "";
                 if (regName.empty()) continue;
-                auto known = knownOffsets.find(regName);
-                int64_t regOffset = known != knownOffsets.end() ? known->second : 0;
+                // Prefer the serialized offset; fall back to well-known offsets
+                // for snapshots written before register_offset existed.
+                int64_t regOffset = fbCtx->register_offset();
+                if (regOffset == 0) {
+                    auto known = knownOffsets.find(regName);
+                    if (known != knownOffsets.end()) regOffset = known->second;
+                }
                 std::vector<uint8_t> mask;
                 if (fbCtx->mask()) {
                     mask.assign(fbCtx->mask()->begin(), fbCtx->mask()->end());

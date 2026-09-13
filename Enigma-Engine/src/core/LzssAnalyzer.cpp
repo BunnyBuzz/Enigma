@@ -55,7 +55,7 @@ bool LzssAnalyzer::added(Program* program, const AddressSetView& set,
     Address minAddress = program->getMinAddress();
     if (!minAddress.isValid()) return false;
 
-    bool isLE = !program->getLanguage()->isBigEndian();
+    bool isLE = program->getLanguageID().getIdAsString().find(":BE:") == std::string::npos;
     auto provider = std::make_unique<MemoryByteProvider>(program->getMemory(), minAddress, program);
     BinaryReader reader(std::move(provider), isLE);
 

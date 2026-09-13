@@ -27,7 +27,8 @@ X86FunctionPurgeAnalyzer::X86FunctionPurgeAnalyzer()
 
 bool X86FunctionPurgeAnalyzer::canAnalyze(Program* program) const {
     if (!program || !program->getLanguage()) return false;
-    if (program->getLanguage()->getDefaultSpace()->getSize() > 32) return false;
+    auto* defSpace = program->getLanguage()->getDefaultSpace();
+    if (!defSpace || defSpace->getSize() > 32) return false;
     return program->getLanguage()->getProcessor().getName() == "x86";
 }
 
@@ -53,7 +54,7 @@ bool X86FunctionPurgeAnalyzer::added(Program* program, const AddressSetView& set
         Function* func = funcIter.next();
         if (!func) continue;
 
-        monitor->setMessage("Analyzing purge: " + func->getName());
+        if (monitor) monitor->setMessage("Analyzing purge: " + func->getName());
 
         std::vector<Instruction*> instructions = listing->getInstructions(func->getBody());
         bool foundRet = false;

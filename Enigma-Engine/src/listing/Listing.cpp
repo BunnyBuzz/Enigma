@@ -21,6 +21,13 @@ namespace ghidra {
 
 Listing::Listing(Program* program) : program_(program) {}
 
+Listing::~Listing() {
+    for (const auto& pair : instructions_) delete pair.second;
+    for (const auto& pair : data_) delete pair.second;
+    sortedInstructions_.clear();
+    sortedData_.clear();
+}
+
 Program* Listing::getProgram() const { return program_; }
 
 Instruction* Listing::getInstructionAt(Address addr) const {
@@ -146,13 +153,21 @@ void Listing::addData(Data* data) {
 }
 
 void Listing::removeInstruction(Address addr) {
-    instructions_.erase(static_cast<uint64_t>(addr.getOffset()));
-    instructionsDirty_ = true;
+    auto it = instructions_.find(static_cast<uint64_t>(addr.getOffset()));
+    if (it != instructions_.end()) {
+        delete it->second;
+        instructions_.erase(it);
+        instructionsDirty_ = true;
+    }
 }
 
 void Listing::removeData(Address addr) {
-    data_.erase(static_cast<uint64_t>(addr.getOffset()));
-    dataDirty_ = true;
+    auto it = data_.find(static_cast<uint64_t>(addr.getOffset()));
+    if (it != data_.end()) {
+        delete it->second;
+        data_.erase(it);
+        dataDirty_ = true;
+    }
 }
 
 bool Listing::isUndefined(Address addr) const {

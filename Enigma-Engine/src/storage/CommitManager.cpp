@@ -14,6 +14,8 @@
 #include <chrono>
 #include <ctime>
 #include <algorithm>
+#include <atomic>
+#include <system_error>
 
 namespace ghidra {
 namespace storage {
@@ -35,8 +37,11 @@ std::string CommitManager::generateCommitId() {
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()).count();
+    // Per-process counter: two commits in the same millisecond must not
+    // share an ID (their directories would collide).
+    static std::atomic<unsigned> counter{0};
     std::stringstream ss;
-    ss << std::hex << ms;
+    ss << std::hex << ms << "-" << counter.fetch_add(1);
     return ss.str();
 }
 
@@ -99,7 +104,11 @@ std::string CommitManager::createCommit(const std::string& repoPath,
                                          EventLog& eventLog) {
     std::string commitId = generateCommitId();
     std::string commitDir = Repository::getCommitDir(repoPath, commitId);
-    if (!fs::create_directories(commitDir)) return "";
+    // create_directories returns false when the dir already exists, which
+    // is not an error. Only fail on a real filesystem error.
+    std::error_code ec;
+    fs::create_directories(commitDir, ec);
+    if (ec) return "";
 
     // Write snapshot
     auto snapshotData = SnapshotWriter::serialize(program);
@@ -166,14 +175,17 @@ bool CommitManager::loadCommitMeta(const std::string& repoPath,
     if (!fb::VerifyCommitMetadataBuffer(verifier)) return false;
 
     auto* meta = fb::GetCommitMetadata(buf.data());
-    info.commitId = meta->commit_id()->str();
-    info.parentCommitId = meta->parent_commit_id()->str();
+    auto fbStr = [](const flatbuffers::String* s) {
+        return s ? s->str() : std::string();
+    };
+    info.commitId = fbStr(meta->commit_id());
+    info.parentCommitId = fbStr(meta->parent_commit_id());
     if (meta->snapshot_sha256()) info.snapshotSha256 = meta->snapshot_sha256()->str();
     info.snapshotSize = meta->snapshot_size();
     info.timestamp = meta->timestamp();
-    info.message = meta->message()->str();
-    info.branchName = meta->branch_name()->str();
-    info.author = meta->author()->str();
+    info.message = fbStr(meta->message());
+    info.branchName = fbStr(meta->branch_name());
+    info.author = fbStr(meta->author());
     info.changeCount = meta->change_count();
     return true;
 }

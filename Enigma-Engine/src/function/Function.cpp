@@ -37,6 +37,7 @@ Function::~Function() {
     for (auto* var : localVariables_) {
         delete var;
     }
+    delete signature_;
 }
 
 std::vector<Variable*> Function::getAllVariables() const {
@@ -52,10 +53,13 @@ void Function::removeVariable(Variable* var) {
     auto it = std::find(parameters_.begin(), parameters_.end(), var);
     if (it != parameters_.end()) {
         parameters_.erase(it);
+        delete var;
+        return;
     }
     auto it2 = std::find(localVariables_.begin(), localVariables_.end(), var);
     if (it2 != localVariables_.end()) {
         localVariables_.erase(it2);
+        delete var;
     }
 }
 
@@ -114,9 +118,15 @@ void Function::removeTag(const std::string& name) {
 
 bool Function::setSignature(FunctionSignature* sig, SignatureSource source) {
     if (!signatureSourceOutranks(source, signatureSource_)) return false;
+    if (sig != signature_) delete signature_;
     signature_ = sig;
     signatureSource_ = source;
     return true;
+}
+
+void Function::setSignature(FunctionSignature* sig) {
+    if (sig != signature_) delete signature_;
+    signature_ = sig;
 }
 
 bool Function::setCallingConvention(PrototypeModel* model, SignatureSource source) {

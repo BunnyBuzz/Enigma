@@ -140,7 +140,9 @@ void StructureEditorWidget::onTreeSelect() {
     if (!idx.isValid()) { table_->setRowCount(0); info_->setText("Select a type"); return; }
     QVariant v = idx.data(Qt::UserRole);
     if (!v.isValid()) { table_->setRowCount(0); info_->setText("Select a type"); return; }
-    showFields(reinterpret_cast<DataType*>(v.value<quintptr>()));
+    auto* dt = reinterpret_cast<DataType*>(v.value<quintptr>());
+    showFields(dt);
+    if (dt) emit typeSelected(QString::fromStdString(dt->getName()));
 }
 
 void StructureEditorWidget::showFields(DataType* dt) {

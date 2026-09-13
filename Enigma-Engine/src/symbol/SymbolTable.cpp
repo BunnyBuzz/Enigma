@@ -12,6 +12,7 @@
 #include <ghidra/SymbolTable.h>
 #include <ghidra/Program.h>
 #include <ghidra/FunctionManager.h>
+#include <algorithm>
 
 namespace ghidra {
 
@@ -104,8 +105,18 @@ bool SymbolTable::removeSymbolSpecial(Symbol* sym) {
     std::string name = sym->getName();
     std::string addrStr = sym->getAddress().toString();
     if (symbols_.erase(id) > 0) {
-        symbolsByName_.erase(name);
-        symbolsAtAddr_.erase(addrStr);
+        auto nameIt = symbolsByName_.find(name);
+        if (nameIt != symbolsByName_.end()) {
+            auto& vec = nameIt->second;
+            vec.erase(std::remove(vec.begin(), vec.end(), sym), vec.end());
+            if (vec.empty()) symbolsByName_.erase(nameIt);
+        }
+        auto addrIt = symbolsAtAddr_.find(addrStr);
+        if (addrIt != symbolsAtAddr_.end()) {
+            auto& vec = addrIt->second;
+            vec.erase(std::remove(vec.begin(), vec.end(), sym), vec.end());
+            if (vec.empty()) symbolsAtAddr_.erase(addrIt);
+        }
         return true;
     }
     return false;

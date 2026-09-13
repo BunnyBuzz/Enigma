@@ -8,6 +8,7 @@
 #include <ghidra/ScalarOperandAnalyzer.h>
 #include <ghidra/OperandReferenceAnalyzer.h>
 #include <ghidra/DataOperandReferenceAnalyzer.h>
+#include <ghidra/DataRefFunctionAnalyzer.h>
 #include <ghidra/ConstantPropagationAnalyzer.h>
 #include <ghidra/ExternalEntryFunctionAnalyzer.h>
 #include <ghidra/SharedReturnAnalyzer.h>
@@ -294,6 +295,7 @@ void AutoAnalysisManager::initializeDefaultAnalyzers() {
     registerAnalyzer(std::make_unique<DataSectionFunctionScannerAnalyzer>());
     registerAnalyzer(std::make_unique<FunctionStartDataPostAnalyzer>());
     registerAnalyzer(std::make_unique<FunctionStartFuncAnalyzer>());
+    registerAnalyzer(std::make_unique<DataRefFunctionAnalyzer>());
     // NOTE: FunctionStartPostAnalyzer disabled - byte-by-byte scan is too slow for large binaries
     registerAnalyzer(std::make_unique<FunctionStartPreFuncAnalyzer>());
     registerAnalyzer(std::make_unique<PdbAnalyzer>());

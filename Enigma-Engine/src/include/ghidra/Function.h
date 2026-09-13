@@ -50,7 +50,9 @@ public:
     void setBody(const AddressSet& body) { body_ = body; }
 
     FunctionSignature* getSignature() const { return signature_; }
-    void setSignature(FunctionSignature* sig) { signature_ = sig; }
+    // Takes ownership: the previous signature (if any) is deleted.
+    // Defined in Function.cpp where FunctionSignature is complete.
+    void setSignature(FunctionSignature* sig);
     bool setSignature(FunctionSignature* sig, SignatureSource source);
 
     SignatureSource getSignatureSource() const {
@@ -80,6 +82,7 @@ public:
     void addLocalVariable(Variable* var) { localVariables_.push_back(var); }
 
     std::vector<Variable*> getAllVariables() const;
+    // Detaches and deletes the variable. Do not use the pointer afterwards.
     void removeVariable(Variable* var);
 
     const std::vector<Function*>& getCalledFunctions() const { return calledFunctions_; }

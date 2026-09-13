@@ -684,7 +684,8 @@ std::vector<uint8_t> SnapshotWriter::serialize(const ProgramDB& program) {
                 std::to_string(rv->getUnsignedOffset()).c_str(),
                 static_cast<uint64_t>(kv.first.end.getOffset()),
                 mask.empty() ? nullptr : &mask,
-                /*is_default=*/false));
+                /*is_default=*/false,
+                static_cast<int64_t>(kv.first.reg->getOffset())));
         }
         for (const auto& kv : ctx->getDefaultValues()) {
             const RegisterValue* rv = kv.second;
@@ -696,7 +697,8 @@ std::vector<uint8_t> SnapshotWriter::serialize(const ProgramDB& program) {
                 std::to_string(rv->getUnsignedOffset()).c_str(),
                 static_cast<uint64_t>(kv.first.end.getOffset()),
                 mask.empty() ? nullptr : &mask,
-                /*is_default=*/true));
+                /*is_default=*/true,
+                static_cast<int64_t>(kv.first.reg->getOffset())));
         }
     }
 

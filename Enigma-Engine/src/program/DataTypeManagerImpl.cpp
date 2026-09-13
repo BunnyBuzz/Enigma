@@ -418,6 +418,18 @@ void DataTypeManagerImpl::removeDataType(DataType* dt) {
     }
 }
 
+bool DataTypeManagerImpl::remove(DataType* dt) {
+    if (!dt) return false;
+    // removeDataType is void, so check membership first to report status.
+    for (const auto& ptr : types_) {
+        if (ptr.get() == dt) {
+            removeDataType(dt);
+            return true;
+        }
+    }
+    return false;
+}
+
 int64_t DataTypeManagerImpl::getNextId() {
     return nextId_++;
 }
