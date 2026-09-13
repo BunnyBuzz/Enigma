@@ -1010,9 +1010,9 @@ private:
         }
 
         for (uint32_t i = 0; i < numNames; i++) {
-            if (namesOffset + i * 4 + 4 > rawData_.size()) break;
-            if (ordinalsOffset + i * 2 + 2 > rawData_.size()) break;
-            if (functionsOffset + i * 4 + 4 > rawData_.size()) break;
+            if ((uint64_t)namesOffset + (uint64_t)i * 4 + 4 > rawData_.size()) break;
+            if ((uint64_t)ordinalsOffset + (uint64_t)i * 2 + 2 > rawData_.size()) break;
+            if ((uint64_t)functionsOffset + (uint64_t)i * 4 + 4 > rawData_.size()) break;
 
             uint32_t nameRVA = *reinterpret_cast<uint32_t*>(rawData_.data() + namesOffset + i * 4);
             uint16_t ordinal = *reinterpret_cast<uint16_t*>(rawData_.data() + ordinalsOffset + i * 2);
@@ -1350,10 +1350,7 @@ private:
             uint32_t val = elf32(entryOffset + 4);
 
             if (tag == 1) {
-                std::string libName;
-                if (strTabOffset + val < rawData_.size()) {
-                    libName = reinterpret_cast<const char*>(rawData_.data() + strTabOffset + val);
-                }
+                std::string libName = readStringAtOffset(strTabOffset + val);
                 if (!libName.empty()) {
                     ImportInfo imp{};
                     imp.libraryName = libName;
@@ -1396,10 +1393,7 @@ private:
             uint64_t val = elf64(entryOffset + 8);
 
             if (tag == 1) {
-                std::string libName;
-                if (strTabOffset + val < rawData_.size()) {
-                    libName = reinterpret_cast<const char*>(rawData_.data() + strTabOffset + val);
-                }
+                std::string libName = readStringAtOffset(strTabOffset + val);
                 if (!libName.empty()) {
                     ImportInfo imp{};
                     imp.libraryName = libName;
@@ -1539,8 +1533,8 @@ private:
                     uint64_t symOff = symTabOff + symIdx * symEnt;
                     if (symOff + 8 <= rawData_.size()) {
                         uint32_t nameIdx = elf32(symOff);
-                        if (nameIdx != 0 && strTabOffset + nameIdx < rawData_.size()) {
-                            symName = reinterpret_cast<const char*>(rawData_.data() + strTabOffset + nameIdx);
+                        if (nameIdx != 0) {
+                            symName = readStringAtOffset(strTabOffset + nameIdx);
                         }
                     }
                 }
@@ -1634,8 +1628,8 @@ private:
                     uint32_t symOff = symTabOff + symIdx * symEnt;
                     if (symOff + 8 <= rawData_.size()) {
                         uint32_t nameIdx = elf32(symOff);
-                        if (nameIdx != 0 && strTabOffset + nameIdx < rawData_.size()) {
-                            symName = reinterpret_cast<const char*>(rawData_.data() + strTabOffset + nameIdx);
+                        if (nameIdx != 0) {
+                            symName = readStringAtOffset(strTabOffset + nameIdx);
                         }
                     }
                 }
@@ -1939,8 +1933,8 @@ private:
         // Dynamic libraries (DT_NEEDED), same shape as the section path.
         for (uint64_t nIdx : tags.needed) {
             std::string libName;
-            if (nIdx != 0 && strOff + nIdx < rawData_.size()) {
-                libName = reinterpret_cast<const char*>(rawData_.data() + strOff + nIdx);
+            if (nIdx != 0) {
+                libName = readStringAtOffset(strOff + nIdx);
             }
             if (libName.empty()) continue;
             ImportInfo imp{};
@@ -2120,17 +2114,28 @@ private:
     bool parseFatMachO() {
         if (rawData_.size() < 12) return false;
 
-        // fat_header / fat_arch are big-endian regardless of host or payload.
+        // fat_header / fat_arch are big-endian by spec, but accept
+        // little-endian as a fallback (some producers write host order).
+        // Endianness is decided once from nfat_arch, then applies to all
+        // fields.
         auto swap32 = [](uint32_t v) {
             return ((v & 0xFFu) << 24) | ((v & 0xFF00u) << 8) |
                    ((v & 0xFF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
         };
-        auto fat32 = [&](size_t off) {
-            return swap32(*reinterpret_cast<uint32_t*>(rawData_.data() + off));
+        auto raw32 = [&](size_t off) {
+            return *reinterpret_cast<uint32_t*>(rawData_.data() + off);
         };
-
-        uint32_t nfat_arch = fat32(4);
-        if (nfat_arch == 0 || nfat_arch > 16) return false;
+        bool bigEndian = true;
+        uint32_t nfat_arch = swap32(raw32(4));
+        if (nfat_arch == 0 || nfat_arch > 16) {
+            nfat_arch = raw32(4);
+            if (nfat_arch == 0 || nfat_arch > 16) return false;
+            bigEndian = false;
+        }
+        auto fat32 = [&](size_t off) {
+            uint32_t v = raw32(off);
+            return bigEndian ? swap32(v) : v;
+        };
 
         // Architecture preference order
         static const uint32_t PREFERRED_CPUS[] = {
@@ -2145,12 +2150,14 @@ private:
         uint32_t bestOffset = 0, bestSize = 0;
         bool found = false;
 
-        // Start with the first arch as fallback
+        // Start with the first arch as fallback (fat_arch fields are
+        // entry-relative: offset at +8, size at +12)
         if (nfat_arch > 0) {
             if (8 + 20 > rawData_.size()) return false;
-            bestOffset = fat32(8);
-            bestSize = fat32(12);
-            if (bestOffset + bestSize > rawData_.size() || bestOffset == 0 || bestSize == 0)
+            bestOffset = fat32(16);
+            bestSize = fat32(20);
+            if (bestOffset == 0 || bestSize == 0 ||
+                (uint64_t)bestOffset + bestSize > rawData_.size())
                 return false;
             found = true;
         }
@@ -2164,7 +2171,9 @@ private:
             uint32_t offset = fat32(entryOffset + 8);
             uint32_t size = fat32(entryOffset + 12);
 
-            if (offset == 0 || size == 0 || offset + size > rawData_.size()) continue;
+            if (offset == 0 || size == 0 ||
+                (uint64_t)offset + size > rawData_.size())
+                continue;
 
             // Check if this is our preferred architecture
             for (auto pref : PREFERRED_CPUS) {
@@ -2329,9 +2338,9 @@ private:
             uint64_t base = img->fileOffset;
             for (auto& sec : sections_) sec.fileOffset += base;
             for (auto& seg : machoSegments_) seg.fileoff += base;
-            if (chainedFixupsOff_ != 0) chainedFixupsOff_ += static_cast<uint32_t>(base);
+            if (chainedFixupsOff_ != 0) chainedFixupsOff_ += base;
             if (dysymtabIndirectSymOffset_ != 0)
-                dysymtabIndirectSymOffset_ += static_cast<uint32_t>(base);
+                dysymtabIndirectSymOffset_ += base;
         }
         return ok;
     }
@@ -2372,7 +2381,9 @@ private:
 
             switch (cmd) {
                 case 0x01: { // LC_SEGMENT
-                    if (cmdsize < 56) break;
+                    if (cmdsize < 56 ||
+                        (uint64_t)cmdOffset + 56 > rawData_.size())
+                        break;
                     uint32_t nsects = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 48);
                     uint32_t segFileOff = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 32);
                     uint32_t segFileSize = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 36);
@@ -2508,7 +2519,9 @@ private:
 
             switch (cmd) {
                 case 0x19: { // LC_SEGMENT_64
-                    if (cmdsize < 72) break;
+                    if (cmdsize < 72 ||
+                        (uint64_t)cmdOffset + 72 > rawData_.size())
+                        break;
                     uint32_t nsects = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 64);
                     uint64_t segFileOff = *reinterpret_cast<uint64_t*>(rawData_.data() + cmdOffset + 40);
                     uint64_t segFileSize = *reinterpret_cast<uint64_t*>(rawData_.data() + cmdOffset + 48);
@@ -2685,7 +2698,7 @@ private:
     // stride count (4-byte units for 64/64_OFFSET, 8-byte for ARM64E).
     void parseMachOChainedFixups(int ptrSize) {
         const size_t sz = rawData_.size();
-        const uint32_t base = chainedFixupsOff_;
+        const uint64_t base = chainedFixupsOff_;
         if (base == 0 || base + 28 > sz) return;
 
         auto rd16 = [&](size_t o) -> uint16_t {
@@ -3615,7 +3628,7 @@ private:
     int bitness_ = 32;
     bool elfBigEndian_ = false;
     uint32_t cpusubtype_ = 0;
-    uint32_t dysymtabIndirectSymOffset_ = 0;
+    uint64_t dysymtabIndirectSymOffset_ = 0;
     uint32_t dysymtabIndirectSymCount_ = 0;
     std::vector<std::string> machONlistNames_;
     std::vector<std::string> machoDylibNames_;
@@ -3626,7 +3639,7 @@ private:
     };
     std::vector<MachOSegInfo> machoSegments_;
     uint64_t machoTextAddr_ = 0;
-    uint32_t chainedFixupsOff_ = 0;
+    uint64_t chainedFixupsOff_ = 0;
     uint32_t chainedFixupsSize_ = 0;
     std::vector<DyldCacheImageInfo> dyldCacheImages_;
     bool isDyldCache_ = false;

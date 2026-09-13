@@ -30,9 +30,6 @@ class Listing {
 public:
     Listing() = default;
     explicit Listing(Program* program);
-    // Owns all Instructions/Data: destroys them (caches hold the same
-    // pointers and are cleared, never double-deleted).
-    ~Listing();
 
     Program* getProgram() const;
 
@@ -48,8 +45,8 @@ public:
     void addInstruction(Instruction* inst);
     void addData(Data* data);
     Data* createData(Address addr, DataType* dataType, int length = -1);
-    // Detaches and deletes the unit. Do not use its address afterwards
-    // except to re-add a replacement.
+    // Non-owning: callers retain ownership (units may live on the stack).
+    // remove* detaches without deleting.
     void removeInstruction(Address addr);
     void removeData(Address addr);
 

@@ -9886,7 +9886,7 @@ int main() {
         ghidra::AutoAnalysisManager aam(&prog);
         aam.initializeDefaultAnalyzers();
         auto aamCount = aam.getAnalyzers().size();
-        TEST("W112.AAM.analyzers.count", aamCount == 140);
+        TEST("W112.AAM.analyzers.count", aamCount == 141);
         {
             auto allAnalyzers = aam.getAnalyzers();
             bool hasFuncDiscover = false, hasImportThunk = false, hasSubRef = false;
@@ -9894,6 +9894,7 @@ int main() {
             bool hasDataRef = false, hasExtEntry = false, hasSharedRet = false;
             bool hasStackVar = false, hasNoReturn = false, hasFindNoRet = false;
             bool hasEntryPt = false, hasAddrTable = false, hasCreateThunk = false;
+            bool hasDataRefFunc = false;
             for (auto* a : allAnalyzers) {
                 std::string n = a->getName();
                 if (n == "Function Discovery") hasFuncDiscover = true;
@@ -9911,6 +9912,7 @@ int main() {
                 if (n == "Disassemble Entry Points") hasEntryPt = true;
                 if (n == "Create Address Tables") hasAddrTable = true;
                 if (n == "Subroutine References") hasCreateThunk = true;
+                if (n == "Data Reference Functions") hasDataRefFunc = true;
             }
             TEST("W112.AAM.analyzer.FunctionDiscovery", hasFuncDiscover);
             TEST("W112.AAM.analyzer.ImportThunk", hasImportThunk);
@@ -9926,6 +9928,7 @@ int main() {
             TEST("W112.AAM.analyzer.FindNoReturn", hasFindNoRet);
             TEST("W112.AAM.analyzer.EntryPoint", hasEntryPt);
             TEST("W112.AAM.analyzer.AddressTable", hasAddrTable);
+            TEST("W112.AAM.analyzer.DataRefFunctions", hasDataRefFunc);
         }
 
         // Test 2: FunctionDiscoveryAnalyzerAdapter via AAM
