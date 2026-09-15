@@ -135,56 +135,6 @@ cmake --build build
 
 ---
 
-## Function Detection Benchmark
-
-Tested against real Windows binaries:
-
-| Binary         | Enigma | Ghidra | Recall |
-| -------------- | -----: | -----: | -----: |
-| `notepad.exe`  |    623 |    498 |   98%+ |
-| `shell32.dll`  | 30,233 | 30,993 | 97.55% |
-| `kernel32.dll` |  3,763 | ~3,800 |   ~99% |
-
----
-
-## Roadmap
-
-### GUI
-
-* [x] Interactive Disassembly
-* [x] Hex View
-* [x] Decompiled C View
-* [x] Cross-view navigation
-* [x] Basic-block visualization
-* [x] Control-flow arrows
-* [x] Cross-reference navigation
-* [x] Rename symbols and functions
-* [x] Binary patching
-* [x] Call Graph
-* [ ] Function Graph
-* [ ] Advanced Cross-reference Browser
-
-### Engine and Analysis
-
-* [x] Function Knowledge System (FKS)
-* [x] Function fingerprint extraction
-* [x] Ghidra 12.1.3 parity verification
-* [x] Complete remaining partial analysis capabilities
-* [ ] Native implementation of missing loader and analysis capabilities
-* [ ] Expanded demangler and type-system coverage
-* [ ] Additional architecture and format support
-
-### Knowledge and AI
-
-* [x] Function Knowledge System (FKS)
-* [x] Function fingerprint extraction
-* [ ] Repository-based knowledge sharing
-* [ ] AI-assisted function naming
-* [ ] AI-assisted type inference
-* [ ] Pattern recognition
-
----
-
 ## Project Status
 
 Enigma is no longer only a prototype analysis core. The native pipeline, storage layer, analysis systems, and GUI are operational.
