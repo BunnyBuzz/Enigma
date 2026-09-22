@@ -88,7 +88,6 @@ public:
         file.close();
 
         if (rawData_.size() < 64) return false;
-
         if (rawData_[0] == 'M' && rawData_[1] == 'Z') {
             return parsePE();
         } else if (rawData_.size() >= 52 && rawData_[0] == 0x7F && rawData_[1] == 'E' &&
@@ -1014,10 +1013,10 @@ private:
             if ((uint64_t)ordinalsOffset + (uint64_t)i * 2 + 2 > rawData_.size()) break;
             if ((uint64_t)functionsOffset + (uint64_t)i * 4 + 4 > rawData_.size()) break;
 
-            uint32_t nameRVA = *reinterpret_cast<uint32_t*>(rawData_.data() + namesOffset + i * 4);
-            uint16_t ordinal = *reinterpret_cast<uint16_t*>(rawData_.data() + ordinalsOffset + i * 2);
+            uint32_t nameRVA = *reinterpret_cast<uint32_t*>(rawData_.data() + namesOffset + (uint64_t)i * 4);
+            uint16_t ordinal = *reinterpret_cast<uint16_t*>(rawData_.data() + ordinalsOffset + (uint64_t)i * 2);
             if (functionsOffset + (uint64_t)ordinal * 4 + 4 > rawData_.size()) continue;
-            uint32_t funcRVA = *reinterpret_cast<uint32_t*>(rawData_.data() + functionsOffset + ordinal * 4);
+            uint32_t funcRVA = *reinterpret_cast<uint32_t*>(rawData_.data() + functionsOffset + (uint64_t)ordinal * 4);
 
             std::string name = readStringAtRVA(nameRVA);
             if (name.empty()) continue;
@@ -2189,8 +2188,9 @@ private:
         if (!found || bestOffset == 0 || bestSize == 0) return false;
 
         // Extract the thin Mach-O into rawData_ and parse it
-        std::vector<uint8_t> thinData(rawData_.begin() + bestOffset,
-                                       rawData_.begin() + bestOffset + bestSize);
+        std::vector<uint8_t> thinData(
+            rawData_.begin() + static_cast<ptrdiff_t>(bestOffset),
+            rawData_.begin() + static_cast<ptrdiff_t>(bestOffset + bestSize));
 
         // Check thin Mach-O magic
         if (thinData.size() < 8) return false;
@@ -2265,9 +2265,7 @@ private:
                 const uint64_t addr = *reinterpret_cast<uint64_t*>(rawData_.data() + im);
                 const uint32_t pathOff = *reinterpret_cast<uint32_t*>(rawData_.data() + im + 24);
                 if (pathOff >= sz) continue;
-                std::string name = reinterpret_cast<const char*>(rawData_.data() + pathOff);
-                size_t n = name.find('\0');
-                if (n != std::string::npos) name.resize(n);
+                std::string name = readStringAtOffset(pathOff);
                 if (name.empty()) continue;
                 DyldCacheImageInfo img{};
                 img.name = name;
@@ -2354,7 +2352,6 @@ private:
     bool parseMachO32() {
         formatName_ = "Mac OS X Mach-O";
         if (rawData_.size() < 28) return false;
-        if (rawData_.size() < 28) return false;
 
         uint32_t cputype = *reinterpret_cast<uint32_t*>(rawData_.data() + 4);
         cpusubtype_ = *reinterpret_cast<uint32_t*>(rawData_.data() + 8);
@@ -2377,7 +2374,7 @@ private:
         while (cmdOffset + 8 <= cmdEnd && cmdOffset + 8 <= rawData_.size()) {
             uint32_t cmd = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset);
             uint32_t cmdsize = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 4);
-            if (cmdsize < 8) break;
+            if (cmdsize < 8 || static_cast<uint64_t>(cmdOffset) + cmdsize > cmdEnd) break;
 
             switch (cmd) {
                 case 0x01: { // LC_SEGMENT
@@ -2412,6 +2409,7 @@ private:
                     break;
                 }
                 case 0x02: { // LC_SYMTAB
+                    if ((uint64_t)cmdOffset + 24 > rawData_.size()) break;
                     uint32_t symoff = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 8);
                     uint32_t nsyms = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 12);
                     uint32_t stroff = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 16);
@@ -2420,7 +2418,8 @@ private:
                     break;
                 }
                 case 0x0B: { // LC_DYSYMTAB (32-bit)
-                    if (cmdsize >= 80 && cmdOffset + 80 <= rawData_.size()) {
+                    if (cmdsize >= 80 &&
+                        (uint64_t)cmdOffset + 80 <= rawData_.size()) {
                         dysymtabIndirectSymOffset_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 56);
                         dysymtabIndirectSymCount_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 60);
                     }
@@ -2429,9 +2428,7 @@ private:
                 case 0x0C: { // LC_LOAD_DYLIB
                     uint32_t nameOffset = cmdOffset + 24;
                     if (nameOffset < rawData_.size()) {
-                        std::string libName = reinterpret_cast<const char*>(rawData_.data() + nameOffset);
-                        size_t libLen = libName.find('\0');
-                        if (libLen != std::string::npos) libName.resize(libLen);
+                        std::string libName = readStringAtOffset(nameOffset);
                         if (!libName.empty()) {
                             machoDylibNames_.push_back(libName);
                             ImportInfo imp{};
@@ -2444,14 +2441,14 @@ private:
                     break;
                 }
                 case 0x28: { // LC_MAIN
-                    if (cmdOffset + 16 <= rawData_.size()) {
+                    if ((uint64_t)cmdOffset + 16 <= rawData_.size()) {
                         uint64_t entryoff = *reinterpret_cast<uint64_t*>(rawData_.data() + cmdOffset + 8);
                         entryOff = entryoff;
                     }
                     break;
                 }
                 case 0x34: { // LC_DYLD_CHAINED_FIXUPS
-                    if (cmdOffset + 24 <= rawData_.size()) {
+                    if ((uint64_t)cmdOffset + 24 <= rawData_.size()) {
                         chainedFixupsOff_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 8);
                         chainedFixupsSize_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 16);
                     }
@@ -2515,7 +2512,7 @@ private:
         while (cmdOffset + 8 <= cmdEnd && cmdOffset + 8 <= rawData_.size()) {
             uint32_t cmd = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset);
             uint32_t cmdsize = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 4);
-            if (cmdsize < 8) break;
+            if (cmdsize < 8 || static_cast<uint64_t>(cmdOffset) + cmdsize > cmdEnd) break;
 
             switch (cmd) {
                 case 0x19: { // LC_SEGMENT_64
@@ -2549,6 +2546,7 @@ private:
                     break;
                 }
                 case 0x02: { // LC_SYMTAB
+                    if ((uint64_t)cmdOffset + 24 > rawData_.size()) break;
                     uint32_t symoff = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 8);
                     uint32_t nsyms = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 12);
                     uint32_t stroff = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 16);
@@ -2557,7 +2555,8 @@ private:
                     break;
                 }
                 case 0x0B: { // LC_DYSYMTAB (64-bit)
-                    if (cmdsize >= 80 && cmdOffset + 80 <= rawData_.size()) {
+                    if (cmdsize >= 80 &&
+                        (uint64_t)cmdOffset + 80 <= rawData_.size()) {
                         dysymtabIndirectSymOffset_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 56);
                         dysymtabIndirectSymCount_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 60);
                     }
@@ -2566,9 +2565,7 @@ private:
                 case 0x0C: { // LC_LOAD_DYLIB (64-bit)
                     uint32_t nameOffset = cmdOffset + 24;
                     if (nameOffset < rawData_.size()) {
-                        std::string libName = reinterpret_cast<const char*>(rawData_.data() + nameOffset);
-                        size_t libLen = libName.find('\0');
-                        if (libLen != std::string::npos) libName.resize(libLen);
+                        std::string libName = readStringAtOffset(nameOffset);
                         if (!libName.empty()) {
                             machoDylibNames_.push_back(libName);
                             ImportInfo imp{};
@@ -2581,14 +2578,14 @@ private:
                     break;
                 }
                 case 0x28: { // LC_MAIN
-                    if (cmdOffset + 16 <= rawData_.size()) {
+                    if ((uint64_t)cmdOffset + 16 <= rawData_.size()) {
                         uint64_t entryoff = *reinterpret_cast<uint64_t*>(rawData_.data() + cmdOffset + 8);
                         entryOff = entryoff;
                     }
                     break;
                 }
                 case 0x34: { // LC_DYLD_CHAINED_FIXUPS
-                    if (cmdOffset + 24 <= rawData_.size()) {
+                    if ((uint64_t)cmdOffset + 24 <= rawData_.size()) {
                         chainedFixupsOff_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 8);
                         chainedFixupsSize_ = *reinterpret_cast<uint32_t*>(rawData_.data() + cmdOffset + 16);
                     }
@@ -2634,14 +2631,16 @@ private:
     void resolveMachOImports(int ptrSize) {
         if (dysymtabIndirectSymCount_ == 0 || machONlistNames_.empty()) return;
         if (dysymtabIndirectSymOffset_ >= rawData_.size()) return;
+        // tableBytes at most file size * 4, fits size_t; offset already validated.
+        const size_t tableStart = static_cast<size_t>(dysymtabIndirectSymOffset_);
 
         // Read indirect symbol table (clamped to the file, GP-7046)
         const uint32_t* indirectTable = reinterpret_cast<const uint32_t*>(
-            rawData_.data() + dysymtabIndirectSymOffset_);
+            rawData_.data() + tableStart);
         uint32_t tableCount = dysymtabIndirectSymCount_;
         uint64_t tableBytes = static_cast<uint64_t>(tableCount) * 4;
-        if (tableBytes > rawData_.size() - dysymtabIndirectSymOffset_)
-            tableCount = static_cast<uint32_t>((rawData_.size() - dysymtabIndirectSymOffset_) / 4);
+        if (tableBytes > rawData_.size() - tableStart)
+            tableCount = static_cast<uint32_t>((rawData_.size() - tableStart) / 4);
         if (tableCount == 0) return;
 
         for (const auto& sec : sections_) {
@@ -2729,26 +2728,26 @@ private:
         std::vector<ChainImport> chImports;
         {
             size_t entrySize = (importsFormat == 1) ? 4 : (importsFormat == 2) ? 8 : 16;
-            uint32_t impBase = base + importsOff;
+            uint64_t impBase = static_cast<uint64_t>(base) + importsOff;
             for (uint32_t i = 0; i < importsCount && importsCount < 0x10000; i++) {
-                if (static_cast<uint64_t>(impBase) + (i + 1ULL) * entrySize > sz) break;
+                if (impBase + (i + 1ULL) * entrySize > sz) break;
                 ChainImport ci{};
                 if (importsFormat == 1 || importsFormat == 2) {
-                    uint32_t v = importsFormat == 1 ? rd32(impBase + i * 4)
-                                                    : static_cast<uint32_t>(rd64(impBase + i * 8));
+                    uint32_t v = importsFormat == 1 ? rd32(impBase + (uint64_t)i * 4)
+                                                    : static_cast<uint32_t>(rd64(impBase + (uint64_t)i * 8));
                     ci.libraryOrdinal = static_cast<int8_t>(v & 0xFF);
                     ci.nameOffset = (v >> 9) & 0x7FFFFF;
                 } else {
-                    uint64_t v = rd64(impBase + i * 16);
+                    uint64_t v = rd64(impBase + (uint64_t)i * 16);
                     ci.libraryOrdinal = static_cast<int16_t>(v & 0xFFFF);
-                    ci.nameOffset = rd32(impBase + i * 16 + 4);
+                    ci.nameOffset = rd32(impBase + (uint64_t)i * 16 + 4);
                 }
                 chImports.push_back(ci);
             }
         }
 
         // dyld_chained_starts_in_image: seg_count + per-segment offsets
-        const uint32_t starts = base + startsOff;
+        const uint64_t starts = static_cast<uint64_t>(base) + startsOff;
         if (starts + 4 > sz) return;
         const uint32_t segCount = rd32(starts);
         if (segCount == 0 || segCount > 64) return;
@@ -2779,11 +2778,8 @@ private:
                         const ChainImport& ci = chImports[ordinal];
                         std::string symName;
                         size_t symOff = static_cast<size_t>(base) + symbolsOff + ci.nameOffset;
-                        if (symbolsOff != 0 && symOff < sz) {
-                            symName = reinterpret_cast<const char*>(rawData_.data() + symOff);
-                            size_t n = symName.find('\0');
-                            if (n != std::string::npos) symName.resize(n);
-                        }
+                        if (symbolsOff != 0 && symOff < sz)
+                            symName = readStringAtOffset(symOff);
                         std::string libName;
                         if (ci.libraryOrdinal > 0 &&
                             ci.libraryOrdinal <= static_cast<int32_t>(machoDylibNames_.size()))
@@ -2833,11 +2829,8 @@ private:
                         const ChainImport& ci = chImports[ordinal];
                         std::string symName;
                         size_t symOff = static_cast<size_t>(base) + symbolsOff + ci.nameOffset;
-                        if (symbolsOff != 0 && symOff < sz) {
-                            symName = reinterpret_cast<const char*>(rawData_.data() + symOff);
-                            size_t n = symName.find('\0');
-                            if (n != std::string::npos) symName.resize(n);
-                        }
+                        if (symbolsOff != 0 && symOff < sz)
+                            symName = readStringAtOffset(symOff);
                         std::string libName;
                         if (ci.libraryOrdinal > 0 &&
                             ci.libraryOrdinal <= static_cast<int32_t>(machoDylibNames_.size()))
@@ -3000,10 +2993,8 @@ private:
             uint16_t n_desc = *reinterpret_cast<uint16_t*>(rawData_.data() + entryOffset + 6);
             uint32_t n_value = *reinterpret_cast<uint32_t*>(rawData_.data() + entryOffset + 8);
 
-            std::string name;
-            if (stroff + n_strx < rawData_.size()) {
-                name = reinterpret_cast<const char*>(rawData_.data() + stroff + n_strx);
-            }
+            std::string name = readStringAtOffset(
+                static_cast<uint64_t>(stroff) + n_strx);
             machONlistNames_[i] = name;
             if (name.empty()) continue;
 
@@ -3055,10 +3046,8 @@ private:
             uint16_t n_desc = *reinterpret_cast<uint16_t*>(rawData_.data() + entryOffset + 6);
             uint64_t n_value = *reinterpret_cast<uint64_t*>(rawData_.data() + entryOffset + 8);
 
-            std::string name;
-            if (stroff + n_strx < rawData_.size()) {
-                name = reinterpret_cast<const char*>(rawData_.data() + stroff + n_strx);
-            }
+            std::string name = readStringAtOffset(
+                static_cast<uint64_t>(stroff) + n_strx);
             machONlistNames_[i] = name;
             if (name.empty()) continue;
 
@@ -3373,15 +3362,19 @@ private:
             if (formatName_.empty()) formatName_ = "COFF";
         }
 
-        uint64_t strTabOff = symTabOff + static_cast<uint64_t>(numSyms) * 18;
+        const uint64_t strTabOff = static_cast<uint64_t>(symTabOff) + static_cast<uint64_t>(numSyms) * 18;
         auto strAt = [&](uint64_t off) -> std::string {
-            if (off >= size) return "";
+            if (off >= size || base + off >= rawData_.size()) return "";
             const char* p = reinterpret_cast<const char*>(rawData_.data() + base + off);
+            size_t maxLen = std::min<uint64_t>(size - off, rawData_.size() - base - off);
             size_t len = 0;
-            while (len < size - off && p[len] != '\0') ++len;
+            while (len < maxLen && p[len] != '\0') ++len;
             return std::string(p, len);
         };
         auto secName = [&](uint64_t so) -> std::string {
+            // NOTE: callers pass an absolute file offset (secHdr = base + 20),
+            // so do NOT re-add base here (was base + so double-count, GP-7046).
+            if (so + 8 > rawData_.size()) return "";
             char buf[9] = {};
             std::memcpy(buf, rawData_.data() + so, 8);
             if (buf[0] == '/') {
@@ -3392,6 +3385,9 @@ private:
             return std::string(buf);
         };
         auto symName = [&](uint64_t so) -> std::string {
+            // NOTE: callers pass a member-relative offset (symTabOff + i*18),
+            // so base must be added here.
+            if (base + so + 8 > rawData_.size()) return "";
             uint32_t inlineOff = coff32(base + so + 4);
             if (coff32(base + so) == 0 && inlineOff != 0) return strAt(inlineOff);
             char buf[9] = {};

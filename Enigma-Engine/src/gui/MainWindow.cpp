@@ -1,6 +1,9 @@
 #include "MainWindow.h"
 #include "FunctionExplorer.h"
 #include "DisassemblyFieldView.h"
+#include "DisassemblyModel.h"
+#include "FunctionGraphView.h"
+#include "FunctionGraphWindow.h"
 #include "DecompilerView.h"
 #include "HexView.h"
 #include "HexSearchBar.h"
@@ -205,6 +208,10 @@ MainWindow::MainWindow(QWidget* parent)
                 hexView_->seek(addr);
             }
         }
+
+        // Follow in the function graph (rebuilds only on function change).
+        if (graphView_)
+            refreshGraph(addr);
     });
 }
 
@@ -311,6 +318,20 @@ void MainWindow::createMenuBar() {
     auto* explorerAct = explorerToggleAction_;
     explorerAct->setText(tr("&Explorer"));
     view->addAction(explorerAct);
+
+    auto* graphAct = graphDock_->toggleViewAction();
+    graphAct->setText(tr("Function &Graph"));
+    view->addAction(graphAct);
+
+    showGraphWindowAction_ = view->addAction(tr("Function Graph in New &Window"));
+    connect(showGraphWindowAction_, &QAction::triggered, this, [this]() {
+        if (!graphWindow_) return;
+        const bool firstShow = !graphWindow_->isVisible();
+        graphWindow_->show();
+        if (firstShow) graphWindow_->fitWindowToContent();
+        graphWindow_->raise();
+        graphWindow_->activateWindow();
+    });
 
     view->addSeparator();
     showBytesAction_ = view->addAction(tr("Show &Bytes"));
@@ -542,6 +563,18 @@ void MainWindow::createDockWidgets() {
     decompDock_   = createDock("DECOMPILER", decompView_);
     hexDock_      = createDock("HEX", hexView_);
     consoleDock_  = createDock("CONSOLE", console_);
+    graphView_ = new FunctionGraphView(this);
+    graphDock_ = createDock("FUNCTION GRAPH", graphView_);
+    connect(graphView_, &FunctionGraphView::navigateRequested, this,
+            [this](uint64_t addr) {
+                if (addr != 0) navigateTo(addr);
+            });
+    graphWindow_ = new FunctionGraphWindow(this);
+    graphWindow_->hide();
+    connect(graphWindow_, &FunctionGraphWindow::navigateRequested, this,
+            [this](uint64_t addr) {
+                if (addr != 0) navigateTo(addr);
+            });
     patchListDock_ = createDock("PATCH LIST", patchList_);
     crossRefExplorer_ = new CrossReferenceExplorer(this);
     crossRefDock_ = createDock("CROSS REFERENCES", crossRefExplorer_);
@@ -690,6 +723,7 @@ void MainWindow::createDockWidgets() {
     syncExplorerIcon();
 
     splitDockWidget(disasmDock_, decompDock_, Qt::Horizontal);
+    splitDockWidget(disasmDock_, graphDock_, Qt::Horizontal);
     splitDockWidget(disasmDock_, consoleDock_, Qt::Vertical);
     tabifyDockWidget(consoleDock_, crossRefDock_);
     splitDockWidget(decompDock_, hexDock_, Qt::Vertical);
@@ -1363,8 +1397,8 @@ void MainWindow::onImportFinished() {
     eventLog_.clear();
     ++programVersion_;
 
-    // Release PatchMemory ownership from PatchManager before destroying the
-    // old program (same ordering as loadBinary; avoids a double-free).
+    // Detach the PatchMemory observer before destroying the old program,
+    // which solely owns the wrapper (same ordering as loadBinary).
     patchManager_->releasePatchMemory();
     binaryLoader_.reset();
     program_.reset(importResult_.release());
@@ -1679,10 +1713,9 @@ void MainWindow::loadBinary(const QString& path) {
     currentAddr_ = 0;
     ++programVersion_;
 
-    // Release PatchMemory ownership from PatchManager *before* destroying old program,
-    // because the old program owns PatchMemory via memory_.reset(patchMemory_.get())
-    // in installPatchMemory. Without this, the old program's destructor deletes PatchMemory
-    // while PatchManager's unique_ptr still points to it → double-free → crash on second load.
+    // Detach the PatchMemory observer *before* destroying the old program:
+    // the old program solely owns the wrapper installed on it, so the
+    // observer must not outlive the program it points at.
     patchManager_->releasePatchMemory();
     program_.reset(prog);
     DBG("[loadBinary] installing PatchMemory...\n");
@@ -1919,6 +1952,56 @@ void MainWindow::populateExplorer() {
     explorer_->treeWidget()->setSortingEnabled(true);
     explorer_->treeWidget()->setUpdatesEnabled(true);
     GUARD_EXIT("populateExplorer");
+}
+
+void MainWindow::refreshGraph(uint64_t addr) {
+    if (!graphView_ || !disasmView_ || !program_) return;
+    uint64_t fs = 0, fe = 0;
+    const cfg::DisassemblyCFG* cfg = disasmView_->cfg();
+    if (addr == 0 || !cfg || !disasmView_->functionRangeFor(addr, fs, fe)) {
+        if (graphFuncStart_ != 0 || graphFuncEnd_ != 0) {
+            graphView_->clear();
+            if (graphWindow_) graphWindow_->clear();
+            graphFuncStart_ = 0;
+            graphFuncEnd_ = 0;
+        }
+        return;
+    }
+    if (fs == graphFuncStart_ && fe == graphFuncEnd_) {
+        graphView_->setCurrentAddress(addr);
+        if (graphWindow_) graphWindow_->setCurrentAddress(addr);
+        return;
+    }
+    graphFuncStart_ = fs;
+    graphFuncEnd_ = fe;
+    auto provider = [this](int block) -> QStringList {
+        QStringList lines;
+        const cfg::DisassemblyCFG* c =
+            disasmView_ ? disasmView_->cfg() : nullptr;
+        if (!c || block < 0 ||
+            block >= static_cast<int>(c->blocks().size()))
+            return lines;
+        const cfg::CfgBlock& b = c->blocks()[static_cast<size_t>(block)];
+        for (int r = b.firstRow; r <= b.lastRow; ++r) {
+            const DisasmRow* dr = disasmView_->rowAt(r);
+            if (!dr) continue;
+            if (dr->kind == DisasmRow::Kind::Instruction) {
+                // Compact graph lines: address + mnemonic + operands.
+                const QString ln =
+                    disasmView_->decodedLineText(dr->address, false);
+                if (!ln.trimmed().isEmpty()) lines << ln;
+            } else if (dr->kind == DisasmRow::Kind::FunctionHeader) {
+                lines << QString("; === %1 ===").arg(dr->text);
+            }
+        }
+        return lines;
+    };
+    graphView_->setGraph(cfg, fs, fe, provider);
+    graphView_->setCurrentAddress(addr);
+    if (graphWindow_) {
+        graphWindow_->setGraph(cfg, fs, fe, provider);
+        graphWindow_->setCurrentAddress(addr);
+    }
 }
 
 void MainWindow::runAnalysisAsync() {
@@ -2348,6 +2431,18 @@ void MainWindow::doNavigate(uint64_t addr, const QString& name, bool pushHistory
     } catch (...) {
         NAVLOG("logOnce CRASHED: unknown exception\n");
     }
+
+    // ── STEP 8: Function Graph (follow current function) ───────
+    // Rebuilds only when the function range changed; otherwise just moves
+    // the cursor highlight. Failures must not break navigation teardown.
+    try {
+        refreshGraph(addr);
+    } catch (const std::exception& e) {
+        NAVLOG("STEP8 (graph) CRASHED: %s\n", e.what());
+    } catch (...) {
+        NAVLOG("STEP8 (graph) CRASHED: unknown exception\n");
+    }
+
     programLock_.unlock();
     navBusy_ = false;
     NAVLOG("END\n");

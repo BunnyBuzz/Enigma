@@ -37,6 +37,8 @@ class BinaryLoader;
 
 class FunctionExplorer;
 class DisassemblyFieldView;
+class FunctionGraphView;
+class FunctionGraphWindow;
 class DecompilerView;
 class HexView;
 class ConsoleWidget;
@@ -132,6 +134,7 @@ private:
     void createStatusBar();
     void populateExplorer();
     void runAnalysisAsync();
+    void refreshGraph(uint64_t addr);
     void logOnce(const QString& msg);
 
     void executeWithEvent(std::unique_ptr<ghidra::storage::Event> event);
@@ -148,6 +151,8 @@ private:
     ghidra::Function* currentFunction_ = nullptr;
     int currentFuncVersion_ = -1;  // programVersion_ when currentFunction_ was set
     uint64_t currentAddr_ = 0;
+    uint64_t graphFuncStart_ = 0; // function range shown in the graph view
+    uint64_t graphFuncEnd_ = 0;
     int programVersion_ = 0;       // bumped on each loadBinary for stale-pointer detection
     QStack<uint64_t> backStack_;
     QStack<uint64_t> forwardStack_;
@@ -179,11 +184,14 @@ private:
     QAction* undoAction_ = nullptr;
     QAction* redoAction_ = nullptr;
     QAction* showPatchListAction_ = nullptr;
+    QAction* showGraphWindowAction_ = nullptr;
     QAction* showStringTableAction_ = nullptr;
     QAction* explorerToggleAction_ = nullptr;
 
     FunctionExplorer* explorer_;
     DisassemblyFieldView* disasmView_;
+    FunctionGraphView* graphView_ = nullptr;
+    FunctionGraphWindow* graphWindow_ = nullptr;
     DecompilerView* decompView_;
     HexView* hexView_;
     ConsoleWidget* console_;
@@ -194,6 +202,7 @@ private:
     QDockWidget* explorerDock_;
     QToolBar* explorerFallbackBar_ = nullptr;
     QDockWidget* disasmDock_;
+    QDockWidget* graphDock_ = nullptr;
     QDockWidget* decompDock_;
     QDockWidget* hexDock_;
     QDockWidget* consoleDock_;

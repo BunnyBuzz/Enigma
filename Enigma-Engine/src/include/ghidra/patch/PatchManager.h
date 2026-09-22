@@ -30,9 +30,12 @@ public:
     void setBinaryLoader(BinaryLoader* loader);
     BinaryLoader* binaryLoader() const { return loader_; }
 
-    // PatchMemory access
-    PatchMemory* patchMemory() { return patchMemory_.get(); }
-    void releasePatchMemory() { patchMemory_.release(); }
+    // PatchMemory access: non-owning observer of the wrapper owned by the
+    // installed ProgramDB (see installPatchMemory). Null when detached.
+    // Never delete: co-owning the wrapper here caused a shutdown
+    // double-free (0xC0000374 in ~ProgramDB).
+    PatchMemory* patchMemory() { return patchMemory_; }
+    void releasePatchMemory() { patchMemory_ = nullptr; }
     void installPatchMemory(ProgramDB* programDB);
 
     // Registry
@@ -104,7 +107,7 @@ public:
 private:
     ProgramDB* program_ = nullptr;
     BinaryLoader* loader_ = nullptr;
-    std::unique_ptr<PatchMemory> patchMemory_;
+    PatchMemory* patchMemory_ = nullptr;
 
     std::map<std::string, std::unique_ptr<Patch>> patches_;
     std::map<std::string, std::unique_ptr<PatchGroup>> groups_;

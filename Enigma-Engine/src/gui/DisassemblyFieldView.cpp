@@ -761,6 +761,18 @@ QString DisassemblyFieldView::lineText(int row) const {
     return out;
 }
 
+QString DisassemblyFieldView::decodedLineText(uint64_t addr, bool withBytes) {
+    const DecodedInstruction* inst = decodedInstruction(addr);
+    if (!inst || inst->tokens.empty()) return QString();
+    QString out;
+    for (const Token& t : inst->tokens) {
+        if (!withBytes && t.kind == TokenKind::Bytes) continue;
+        out += t.text;
+        out += QString(t.spaceAfter, QLatin1Char(' '));
+    }
+    return out;
+}
+
 const std::vector<Token>* DisassemblyFieldView::rowTokens(int row) const {
     if (indexBuilt_) {
         const DisasmRow* r = model_.rowAt(row);

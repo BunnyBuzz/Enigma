@@ -230,6 +230,12 @@ target_compile_definitions(enigma_test_disasm_cfg PRIVATE ENIGMA_SLEIGH_DIR="${E
 enigma_apply_warning_policy(enigma_test_disasm_cfg)
 add_test(NAME enigma_test_disasm_cfg COMMAND enigma_test_disasm_cfg)
 
+add_executable(enigma_test_function_graph tests/test_function_graph.cpp)
+target_link_libraries(enigma_test_function_graph PRIVATE enigma_engine)
+target_compile_definitions(enigma_test_function_graph PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
+enigma_apply_warning_policy(enigma_test_function_graph)
+add_test(NAME enigma_test_function_graph COMMAND enigma_test_function_graph)
+
 add_executable(enigma_test_pipeline_comprehensive tests/test_pipeline_comprehensive.cpp)
   target_link_libraries(enigma_test_pipeline_comprehensive PRIVATE enigma_engine)
   target_compile_definitions(enigma_test_pipeline_comprehensive PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")

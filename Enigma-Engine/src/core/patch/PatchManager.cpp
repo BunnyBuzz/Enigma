@@ -294,15 +294,14 @@ static bool rebuildRelocSection(std::vector<uint8_t>& data,
     return true;
 }
 
-PatchManager::PatchManager()
-    : patchMemory_(std::make_unique<PatchMemory>(nullptr))
-{
-}
+PatchManager::PatchManager() = default;
 
 PatchManager::~PatchManager() = default;
 
 void PatchManager::setProgram(ProgramDB* program) {
     program_ = program;
+    // Observer is only valid for the program it was installed on.
+    patchMemory_ = nullptr;
 }
 
 void PatchManager::setBinaryLoader(BinaryLoader* loader) {
@@ -313,8 +312,11 @@ void PatchManager::installPatchMemory(ProgramDB* programDB) {
     if (!programDB) return;
     auto originalMem = programDB->releaseMemory();
     if (!originalMem) return;
-    patchMemory_ = std::make_unique<PatchMemory>(std::move(originalMem));
-    programDB->setMemory(patchMemory_.get());
+    // Sole ownership passes to the program: it frees the wrapper exactly
+    // once at teardown. This manager keeps a non-owning observer.
+    auto wrapper = std::make_unique<PatchMemory>(std::move(originalMem));
+    patchMemory_ = wrapper.get();
+    programDB->setMemory(wrapper.release());
 }
 
 void PatchManager::addPatch(std::unique_ptr<Patch> patch) {
@@ -716,8 +718,10 @@ apply_normal:
     // Let patch capture original bytes BEFORE overlay write
     patch.apply(mem, *program_);
 
-    // Byte-level patches: write to PatchMemory overlay
-    if (!patch.originalBytes().empty() || !patch.patchedBytes().empty()) {
+    // Byte-level patches: write to PatchMemory overlay (skipped when no
+    // wrapper is installed; the overlay is view state, not patch state).
+    if (patchMemory_ &&
+        (!patch.originalBytes().empty() || !patch.patchedBytes().empty())) {
         auto bytes = patch.patchedBytes();
         if (!bytes.empty()) {
             patchMemory_->applyPatch(bytes, patch.baseAddress());
@@ -740,14 +744,14 @@ bool PatchManager::doRevertPatch(Patch& patch) {
 
     Memory& mem = *program_->getMemory();
 
-    // Byte-level: remove from PatchMemory overlay
-    if (!patch.patchedBytes().empty()) {
+    // Byte-level: remove from PatchMemory overlay (see doApplyPatch).
+    if (patchMemory_ && !patch.patchedBytes().empty()) {
         patchMemory_->removePatch(patch.baseAddress(), patch.size());
     }
     // Remove additional writes (cave bytes for trampolines)
     auto additional = patch.additionalWrites();
     for (auto& [addr, additionalBytes] : additional) {
-        if (!additionalBytes.empty()) {
+        if (!additionalBytes.empty() && patchMemory_) {
             patchMemory_->removePatch(addr, additionalBytes.size());
         }
     }

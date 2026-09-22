@@ -77,6 +77,19 @@ public:
     const cfg::DisassemblyCFG* cfg() const { return cfgValid_ ? &cfg_ : nullptr; }
     static int laneX(int lane);
 
+    // Function address range containing addr (false when the address is not
+    // inside a known function). Used by the Function Graph view.
+    bool functionRangeFor(uint64_t addr, uint64_t& start, uint64_t& end) const {
+        if (funcStarts_.empty() || addr < funcStarts_.front()) return false;
+        funcRangeFor(addr, start, end);
+        return end > start;
+    }
+    // Plain-text instruction line for an address (warms the decode cache).
+    // Used by the Function Graph view for node contents; withBytes=false
+    // drops the raw-bytes column for compact graph nodes.
+    QString decodedLineText(uint64_t addr, bool withBytes = true);
+    const DisasmRow* rowAt(int row) const { return model_.rowAt(row); }
+
 signals:
     void seekRequested(uint64_t addr);
     void cursorAddressChanged(uint64_t addr);
