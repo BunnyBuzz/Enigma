@@ -14,6 +14,7 @@
 #include <ghidra/Msg.h>
 #include <ghidra/AddressSetView.h>
 #include <ghidra/AddressSet.h>
+#include <ghidra/ProgramAddressFactory.h>
 #include <algorithm>
 
 namespace ghidra {
@@ -34,6 +35,120 @@ static uint64_t readU64LE(const uint8_t* p) {
            (static_cast<uint64_t>(p[5]) << 40) |
            (static_cast<uint64_t>(p[6]) << 48) |
            (static_cast<uint64_t>(p[7]) << 56);
+}
+
+// Bounded NUL-terminated string read; empty when unreadable, unterminated,
+// or containing non-printable bytes. Used by the G6 record parsers.
+static std::string readCString(Memory* memory, AddressSpace* defaultSpace,
+                               uint64_t addrVal, size_t maxLen) {
+    if (addrVal == 0 || maxLen == 0) return "";
+    Address a(defaultSpace, static_cast<int64_t>(addrVal));
+    MemoryBlock* blk = memory->getBlock(a);
+    if (!blk) return "";
+    int64_t avail = blk->getEnd().getOffset() - a.getOffset() + 1;
+    if (avail <= 0) return "";
+    size_t n = static_cast<size_t>(std::min<int64_t>(avail, static_cast<int64_t>(maxLen)));
+    std::vector<uint8_t> buf(n);
+    if (memory->getBytes(a, buf.data(), static_cast<int>(n)) != static_cast<int>(n)) return "";
+    std::string out;
+    for (uint8_t c : buf) {
+        if (c == 0) break;
+        if (!std::isprint(c)) return "";
+        out += static_cast<char>(c);
+    }
+    return out;
+}
+
+static Namespace* getOrCreateNamespace(SymbolTable* symTable, const std::string& name) {
+    Namespace* global = symTable->getGlobalNamespace();
+    Namespace* ns = symTable->getNamespace(name, global);
+    if (!ns) ns = symTable->createNameSpace(global, name, SourceType::ANALYSIS);
+    return ns;
+}
+
+// method_list_t entries: {SEL name, const char* types, IMP imp}.
+static std::vector<ObjcTypeMetadataAnalyzer::ObjcMethodInfo> parseMethodList(
+    Memory* memory, AddressSpace* defaultSpace, uint64_t listAddr, bool is64) {
+    std::vector<ObjcTypeMetadataAnalyzer::ObjcMethodInfo> out;
+    int ptrSize = is64 ? 8 : 4;
+    if (listAddr == 0) return out;
+    Address la(defaultSpace, static_cast<int64_t>(listAddr));
+    if (!memory->getBlock(la)) return out;
+    uint8_t hdr[8];
+    if (memory->getBytes(la, hdr, 8) != 8) return out;
+    uint32_t entsize = readU32LE(hdr) & ~3u;
+    uint32_t count = readU32LE(hdr + 4);
+    if (count == 0 || count > 10000) return out;
+    if (entsize < static_cast<uint32_t>(ptrSize * 3) || entsize > 64) return out;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint64_t eo = listAddr + 8 + static_cast<uint64_t>(i) * entsize;
+        Address ea(defaultSpace, static_cast<int64_t>(eo));
+        if (!memory->getBlock(ea)) break;
+        std::vector<uint8_t> e(entsize);
+        if (memory->getBytes(ea, e.data(), static_cast<int>(entsize)) != static_cast<int>(entsize))
+            break;
+        uint64_t namePtr = is64 ? readU64LE(e.data()) : readU32LE(e.data());
+        uint64_t typePtr = is64 ? readU64LE(e.data() + ptrSize) : readU32LE(e.data() + ptrSize);
+        uint64_t imp = is64 ? readU64LE(e.data() + ptrSize * 2) : readU32LE(e.data() + ptrSize * 2);
+        std::string sel = readCString(memory, defaultSpace, namePtr, 200);
+        if (sel.empty() || sel.size() > 200) continue;
+        ObjcTypeMetadataAnalyzer::ObjcMethodInfo m;
+        m.sel = sel;
+        m.types = readCString(memory, defaultSpace, typePtr, 128);
+        m.impl = Address(defaultSpace, static_cast<int64_t>(imp));
+        out.push_back(m);
+    }
+    return out;
+}
+
+// ivar_list_t entries: {uint32_t* offset, const char* name,
+// const char* type, uint32_t alignment, uint32_t size}.
+static std::vector<ObjcTypeMetadataAnalyzer::ObjcIvarInfo> parseIvarList(
+    Memory* memory, AddressSpace* defaultSpace, uint64_t listAddr, bool is64) {
+    std::vector<ObjcTypeMetadataAnalyzer::ObjcIvarInfo> out;
+    int ptrSize = is64 ? 8 : 4;
+    if (listAddr == 0) return out;
+    Address la(defaultSpace, static_cast<int64_t>(listAddr));
+    if (!memory->getBlock(la)) return out;
+    uint8_t hdr[8];
+    if (memory->getBytes(la, hdr, 8) != 8) return out;
+    uint32_t entsize = readU32LE(hdr) & ~3u;
+    uint32_t count = readU32LE(hdr + 4);
+    if (count == 0 || count > 10000) return out;
+    if (entsize < static_cast<uint32_t>(ptrSize * 3 + 8) || entsize > 80) return out;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint64_t eo = listAddr + 8 + static_cast<uint64_t>(i) * entsize;
+        Address ea(defaultSpace, static_cast<int64_t>(eo));
+        if (!memory->getBlock(ea)) break;
+        std::vector<uint8_t> e(entsize);
+        if (memory->getBytes(ea, e.data(), static_cast<int>(entsize)) != static_cast<int>(entsize))
+            break;
+        uint64_t offPtr = is64 ? readU64LE(e.data()) : readU32LE(e.data());
+        uint64_t namePtr = is64 ? readU64LE(e.data() + ptrSize) : readU32LE(e.data() + ptrSize);
+        uint64_t typePtr = is64 ? readU64LE(e.data() + ptrSize * 2) : readU32LE(e.data() + ptrSize * 2);
+        uint32_t size = readU32LE(e.data() + ptrSize * 3 + 4);
+        std::string name = readCString(memory, defaultSpace, namePtr, 128);
+        if (name.empty() || name.size() > 128) continue;
+        bool nameOk = true;
+        for (char c : name) {
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') { nameOk = false; break; }
+        }
+        if (!nameOk) continue;
+        ObjcTypeMetadataAnalyzer::ObjcIvarInfo iv;
+        iv.name = name;
+        iv.type = readCString(memory, defaultSpace, typePtr, 64);
+        iv.size = size;
+        if (offPtr != 0) {
+            Address oa(defaultSpace, static_cast<int64_t>(offPtr));
+            if (memory->getBlock(oa)) {
+                uint8_t offBuf[4];
+                if (memory->getBytes(oa, offBuf, 4) == 4)
+                    iv.offset = readU32LE(offBuf);
+            }
+        }
+        out.push_back(iv);
+    }
+    return out;
 }
 
 ObjcTypeMetadataAnalyzer::ObjcTypeMetadataAnalyzer()
@@ -75,7 +190,12 @@ bool ObjcTypeMetadataAnalyzer::added(Program* program, const AddressSetView& set
     Memory* memory = program->getMemory();
     Listing* listing = program->getListing();
     SymbolTable* symTable = program->getSymbolTable();
-    AddressSpace* defaultSpace = program->getLanguage()->getDefaultSpace();
+    Language* lang = program->getLanguage();
+    AddressSpace* defaultSpace = lang ? lang->getDefaultSpace() : nullptr;
+    if (!defaultSpace) {
+        if (auto* paf = dynamic_cast<ProgramAddressFactory*>(program->getAddressFactory()))
+            defaultSpace = const_cast<AddressSpace*>(paf->getDefaultAddressSpace());
+    }
     if (!memory || !listing || !symTable || !defaultSpace) return true;
 
     bool is64 = (defaultSpace->getSize() == 64);
@@ -85,6 +205,9 @@ bool ObjcTypeMetadataAnalyzer::added(Program* program, const AddressSetView& set
     int totalClasses = 0;
     int totalProtocols = 0;
     int totalCategories = 0;
+    classes_.clear();
+    protocols_.clear();
+    categories_.clear();
 
     for (auto* block : memory->getBlocks()) {
         if (monitor && monitor->isCancelled()) break;
@@ -194,6 +317,29 @@ bool ObjcTypeMetadataAnalyzer::added(Program* program, const AddressSetView& set
                         : ("OBJC_CLASS_$_" + className);
                     symTable->createLabel(targetAddr, label, SourceType::ANALYSIS);
                     ++totalClasses;
+                    if (!className.empty()) {
+                        // G6 record: methods/ivars from class_ro_t for the tree.
+                        // baseMethods @ ro+32 / ro+20, ivars @ ro+48 / ro+32.
+                        auto roPtr = [&](int off) -> uint64_t {
+                            if (off < 0 || off + ptrSize > static_cast<int>(roData.size())) return 0;
+                            return is64 ? readU64LE(&roData[static_cast<size_t>(off)])
+                                        : readU32LE(&roData[static_cast<size_t>(off)]);
+                        };
+                        ObjcClassInfo info;
+                        info.name = className;
+                        info.clsAddr = targetAddr;
+                        info.roAddr = roAddr;
+                        info.methods = parseMethodList(memory, defaultSpace,
+                                                       roPtr(is64 ? 32 : 20), is64);
+                        info.ivars = parseIvarList(memory, defaultSpace,
+                                                   roPtr(is64 ? 48 : 32), is64);
+                        classes_.push_back(info);
+                        Namespace* classNs = getOrCreateNamespace(symTable, className);
+                        for (const auto& m : info.methods) {
+                            if (m.impl.getOffset() != 0 && memory->getBlock(m.impl))
+                                symTable->createLabel(m.impl, m.sel, classNs, SourceType::ANALYSIS);
+                        }
+                    }
                 } else if (!className.empty()) {
                     std::string label = "OBJC_CLASSREF_$_" + className;
                     symTable->createLabel(targetAddr, label, SourceType::ANALYSIS);
@@ -245,6 +391,13 @@ bool ObjcTypeMetadataAnalyzer::added(Program* program, const AddressSetView& set
                     : ("OBJC_PROTOCOL_$_" + protoName);
                 symTable->createLabel(targetAddr, label, SourceType::ANALYSIS);
                 ++totalProtocols;
+                if (!protoName.empty()) {
+                    ObjcProtocolInfo info;
+                    info.name = protoName;
+                    info.addr = targetAddr;
+                    protocols_.push_back(info);
+                    getOrCreateNamespace(symTable, protoName);
+                }
             } else if (isCatList) {
                 // Try to resolve category name from category_t structure
                 std::string catName;
@@ -360,6 +513,17 @@ bool ObjcTypeMetadataAnalyzer::added(Program* program, const AddressSetView& set
                 }
                 symTable->createLabel(targetAddr, label, SourceType::ANALYSIS);
                 ++totalCategories;
+                if (!catName.empty() || !catClassName.empty()) {
+                    ObjcCategoryInfo info;
+                    info.name = catName;
+                    info.className = catClassName;
+                    info.addr = targetAddr;
+                    categories_.push_back(info);
+                    std::string nsName = !catClassName.empty() && !catName.empty()
+                        ? catClassName + "_" + catName
+                        : (!catName.empty() ? catName : catClassName);
+                    getOrCreateNamespace(symTable, nsName);
+                }
             }
         }
 

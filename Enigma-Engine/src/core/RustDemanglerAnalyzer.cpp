@@ -177,17 +177,17 @@ static std::string demangleV0(const std::string& mangled) {
                 char subTag = mangled[pos];
                 if (subTag == 'C' || subTag == 'N' || subTag == 'M') {
                     std::string sub = parsePath(pos);
-                    if (!sub.empty()) path += "::" + sub;
+                    if (!sub.empty()) path += (path.empty() ? "" : "::") + sub;
                 } else if (subTag == 'B') {
                     ++pos;
                     if (pos < mangled.size() && mangled[pos] >= '0' && mangled[pos] <= '9')
                         parseIdent(pos);
                     else if (pos < mangled.size() && mangled[pos] == 'p') ++pos;
                     std::string sub = parsePath(pos);
-                    if (!sub.empty()) path += "::" + sub;
+                    if (!sub.empty()) path += (path.empty() ? "" : "::") + sub;
                 } else if (subTag >= '0' && subTag <= '9') {
                     std::string sub = parseIdent(pos);
-                    if (!sub.empty()) path += "::" + sub;
+                    if (!sub.empty()) path += (path.empty() ? "" : "::") + sub;
                 } else if (subTag == 'I' || subTag == 'K') {
                     ++pos;
                     while (pos < mangled.size() && mangled[pos] != 'E') ++pos;

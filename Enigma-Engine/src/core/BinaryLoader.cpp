@@ -71,6 +71,35 @@ std::string BinaryLoader::guessCompilerSpecFromArch(const std::string& arch, int
     return "default";
 }
 
+// Merge firmware data-record ranges [start, end) into one SectionInfo per
+// contiguous run (G4: Memory Map shows sparse ROM blocks instead of one
+// zero-filled span). The image stays dense (index == address), so each
+// run's fileOffset is its start address. A single run keeps the legacy
+// ".text" name; multiple runs become ".rom0", ".rom1", ...
+static void emitFirmwareSections(std::vector<SectionInfo>& sections,
+                                 std::vector<std::pair<uint32_t, uint32_t>> runs) {
+    std::sort(runs.begin(), runs.end());
+    std::vector<std::pair<uint32_t, uint32_t>> merged;
+    for (const auto& r : runs) {
+        if (!merged.empty() &&
+            static_cast<uint64_t>(r.first) <= static_cast<uint64_t>(merged.back().second) + 1)
+            merged.back().second = std::max(merged.back().second, r.second);
+        else
+            merged.push_back(r);
+    }
+    for (size_t i = 0; i < merged.size(); i++) {
+        SectionInfo sec{};
+        sec.name = (merged.size() == 1) ? ".text" : ".rom" + std::to_string(i);
+        sec.virtualAddress = merged[i].first;
+        sec.virtualSize = static_cast<uint64_t>(merged[i].second) - merged[i].first;
+        sec.fileOffset = merged[i].first;
+        sec.fileSize = sec.virtualSize;
+        sec.isReadable = true;
+        sec.isExecutable = true;
+        sections.push_back(sec);
+    }
+}
+
 class SimplePELoader : public BinaryLoader {
 public:
     bool load(const std::string& filePath) override {
@@ -170,6 +199,20 @@ public:
 
     bool isDyldCache() const override { return isDyldCache_; }
     std::vector<DyldCacheImageInfo> getDyldCacheImages() const override { return dyldCacheImages_; }
+    std::vector<uint8_t> getDyldCacheImageBytes(const std::string& name) const override {
+        if (!isDyldCache_) return {};
+        for (const auto& img : dyldCacheImages_) {
+            if (img.name != name) continue;
+            uint64_t end = img.fileOffset + img.size;
+            if (img.size == 0 || end > rawData_.size())
+                end = rawData_.size();
+            if (end <= img.fileOffset || img.fileOffset >= rawData_.size()) return {};
+            return std::vector<uint8_t>(
+                rawData_.begin() + static_cast<ptrdiff_t>(img.fileOffset),
+                rawData_.begin() + static_cast<ptrdiff_t>(end));
+        }
+        return {};
+    }
 
     std::vector<uint8_t> getBytes(uint64_t address, size_t size) const override {
         std::vector<uint8_t> result;
@@ -2273,6 +2316,28 @@ private:
                 img.fileOffset = cacheAddrToFileOffset(addr);
                 dyldCacheImages_.push_back(img);
             }
+
+            // Size each image: next image's file offset, clamped to the end
+            // of the containing mapping (G2 dylib browser extract bounds).
+            // Order-preserving: sort indices, not the images themselves.
+            std::vector<size_t> order(dyldCacheImages_.size());
+            for (size_t k = 0; k < order.size(); k++) order[k] = k;
+            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                return dyldCacheImages_[a].fileOffset < dyldCacheImages_[b].fileOffset;
+            });
+            for (size_t k = 0; k < order.size(); k++) {
+                DyldCacheImageInfo& img = dyldCacheImages_[order[k]];
+                uint64_t end = sz;
+                if (k + 1 < order.size() &&
+                    dyldCacheImages_[order[k + 1]].fileOffset > img.fileOffset)
+                    end = dyldCacheImages_[order[k + 1]].fileOffset;
+                for (const auto& sec : sections_) {
+                    if (img.fileOffset >= sec.fileOffset &&
+                        img.fileOffset < sec.fileOffset + sec.fileSize)
+                        end = std::min(end, sec.fileOffset + sec.fileSize);
+                }
+                img.size = (end > img.fileOffset) ? end - img.fileOffset : 0;
+            }
         }
 
         // Refine the architecture from the first image's Mach-O header
@@ -3144,6 +3209,7 @@ private:
         uint32_t minAddr = 0xFFFFFFFF;
         uint32_t maxAddr = 0;
         std::vector<uint8_t> data;
+        std::vector<std::pair<uint32_t, uint32_t>> runs;
 
         while (std::getline(stream, line)) {
             while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
@@ -3186,6 +3252,7 @@ private:
             switch (recordType) {
                 case 0x00: {
                     uint32_t addr = baseAddr + address;
+                    uint32_t last = addr;
                     for (uint8_t i = 0; i < byteCount; ++i) {
                         uint8_t val = 0;
                         if (!hexByte(9 + i * 2, val)) break;
@@ -3197,7 +3264,9 @@ private:
                         data[targetAddr] = val;
                         minAddr = std::min(minAddr, targetAddr);
                         maxAddr = std::max(maxAddr, targetAddr);
+                        last = targetAddr + 1;
                     }
+                    if (last > addr) runs.emplace_back(addr, last);
                     break;
                 }
                 case 0x01: break;
@@ -3219,16 +3288,8 @@ private:
 
         if (data.empty() || minAddr > maxAddr) return false;
 
-        uint64_t size = maxAddr - minAddr + 1;
-        SectionInfo sec{};
-        sec.name = ".text";
-        sec.virtualAddress = minAddr;
-        sec.virtualSize = size;
-        sec.fileOffset = 0;
-        sec.fileSize = size;
-        sec.isReadable = true;
-        sec.isExecutable = true;
-        sections_.push_back(sec);
+        // One section per contiguous ROM run (G4 sparse memory map).
+        emitFirmwareSections(sections_, runs);
 
         rawData_ = data;
         entryPoint_ = minAddr;
@@ -3247,6 +3308,7 @@ private:
         uint32_t minAddr = 0xFFFFFFFF;
         uint32_t maxAddr = 0;
         std::vector<uint8_t> data;
+        std::vector<std::pair<uint32_t, uint32_t>> runs;
 
         while (std::getline(stream, line)) {
             while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
@@ -3307,6 +3369,7 @@ private:
             if (dataBytes < 0 || line.size() < (size_t)(dataStart + dataBytes * 2)) continue;
 
             if (recordType == '1' || recordType == '2' || recordType == '3') {
+                uint32_t last = address;
                 for (int i = 0; i < dataBytes; ++i) {
                     uint8_t val = 0;
                     if (!hexByte(dataStart + i * 2, val)) break;
@@ -3317,7 +3380,9 @@ private:
                     data[targetAddr] = val;
                     minAddr = std::min(minAddr, targetAddr);
                     maxAddr = std::max(maxAddr, targetAddr);
+                    last = targetAddr + 1;
                 }
+                if (last > address) runs.emplace_back(address, last);
             } else if (recordType == '7' || recordType == '8' || recordType == '9') {
                 entryPoint_ = address;
             }
@@ -3325,16 +3390,8 @@ private:
 
         if (data.empty() || minAddr > maxAddr) return false;
 
-        uint64_t size = maxAddr - minAddr + 1;
-        SectionInfo sec{};
-        sec.name = ".text";
-        sec.virtualAddress = minAddr;
-        sec.virtualSize = size;
-        sec.fileOffset = 0;
-        sec.fileSize = size;
-        sec.isReadable = true;
-        sec.isExecutable = true;
-        sections_.push_back(sec);
+        // One section per contiguous ROM run (G4 sparse memory map).
+        emitFirmwareSections(sections_, runs);
 
         rawData_ = data;
         if (entryPoint_ == 0) entryPoint_ = minAddr;

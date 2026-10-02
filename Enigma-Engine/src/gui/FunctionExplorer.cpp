@@ -1,5 +1,6 @@
 #include "FunctionExplorer.h"
 #include <QHeaderView>
+#include <functional>
 
 FunctionExplorer::FunctionExplorer(QWidget* parent)
     : QWidget(parent)
@@ -53,6 +54,14 @@ QTreeWidgetItem* FunctionExplorer::addCategory(const QString& name) {
     return item;
 }
 
+QTreeWidgetItem* FunctionExplorer::addSubCategory(QTreeWidgetItem* parent, const QString& name) {
+    auto* item = new QTreeWidgetItem(parent);
+    item->setText(0, name);
+    item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+    item->setExpanded(true);
+    return item;
+}
+
 void FunctionExplorer::addEntry(QTreeWidgetItem* parent, uint64_t addr, const QString& name) {
     auto* item = new QTreeWidgetItem(parent);
     item->setText(0, name);
@@ -73,21 +82,20 @@ void FunctionExplorer::onItemDoubleClicked(QTreeWidgetItem* item, int) {
 void FunctionExplorer::onFilterChanged(const QString& text) {
     tree_->blockSignals(true);
     tree_->setUpdatesEnabled(false);
-    for (int i = 0; i < tree_->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* top = tree_->topLevelItem(i);
-        bool topMatch = text.isEmpty() ||
-            top->text(0).contains(text, Qt::CaseInsensitive);
+    std::function<bool(QTreeWidgetItem*)> applyFilter = [&](QTreeWidgetItem* item) {
+        bool selfMatch = text.isEmpty() ||
+            item->text(0).contains(text, Qt::CaseInsensitive) ||
+            item->text(1).contains(text, Qt::CaseInsensitive);
         bool childVisible = false;
-        for (int j = 0; j < top->childCount(); ++j) {
-            QTreeWidgetItem* child = top->child(j);
-            bool match = text.isEmpty() ||
-                child->text(0).contains(text, Qt::CaseInsensitive) ||
-                child->text(1).contains(text, Qt::CaseInsensitive);
-            child->setHidden(!match);
-            if (match) childVisible = true;
+        for (int j = 0; j < item->childCount(); ++j) {
+            if (applyFilter(item->child(j))) childVisible = true;
         }
-        top->setHidden(!topMatch && !childVisible);
-    }
+        bool visible = selfMatch || childVisible;
+        item->setHidden(!visible);
+        return visible;
+    };
+    for (int i = 0; i < tree_->topLevelItemCount(); ++i)
+        applyFilter(tree_->topLevelItem(i));
     tree_->setUpdatesEnabled(true);
     tree_->blockSignals(false);
 }
@@ -100,18 +108,23 @@ void FunctionExplorer::onItemClicked(QTreeWidgetItem* item, int) {
 
 void FunctionExplorer::highlightAddress(uint64_t addr) {
     tree_->blockSignals(true);
-    for (int i = 0; i < tree_->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* top = tree_->topLevelItem(i);
-        for (int j = 0; j < top->childCount(); ++j) {
-            QTreeWidgetItem* child = top->child(j);
-            uint64_t itemAddr = static_cast<uint64_t>(child->data(0, Qt::UserRole).toLongLong());
+    std::function<bool(QTreeWidgetItem*)> findAddr = [&](QTreeWidgetItem* item) {
+        if (item->childCount() == 0) {
+            uint64_t itemAddr = static_cast<uint64_t>(item->data(0, Qt::UserRole).toLongLong());
             if (itemAddr == addr) {
-                tree_->setCurrentItem(child);
-                tree_->scrollToItem(child);
-                tree_->blockSignals(false);
-                return;
+                tree_->setCurrentItem(item);
+                tree_->scrollToItem(item);
+                return true;
             }
+            return false;
         }
+        for (int j = 0; j < item->childCount(); ++j) {
+            if (findAddr(item->child(j))) return true;
+        }
+        return false;
+    };
+    for (int i = 0; i < tree_->topLevelItemCount(); ++i) {
+        if (findAddr(tree_->topLevelItem(i))) break;
     }
     tree_->blockSignals(false);
 }

@@ -17,6 +17,9 @@ public:
 
     void clear();
     QTreeWidgetItem* addCategory(const QString& name);
+    // Nested folder under a category (e.g. Go package under Functions).
+    // Folders never navigate; only leaf entries do.
+    QTreeWidgetItem* addSubCategory(QTreeWidgetItem* parent, const QString& name);
     void addEntry(QTreeWidgetItem* parent, uint64_t addr, const QString& name);
     void setFilter(const QString& text);
 

@@ -83,11 +83,14 @@ struct DelayLoadInfo {
 
 // One dylib entry from a dyld shared cache image table
 // (dyld_cache_image_info).  address is the cache-relative vm address,
-// fileOffset is the offset of the embedded Mach-O within the cache file.
+// fileOffset is the offset of the embedded Mach-O within the cache file,
+// size is the carved byte range [fileOffset, fileOffset + size) covering
+// the embedded image (next image or mapping end, whichever is first).
 struct DyldCacheImageInfo {
     std::string name;
     uint64_t address;
     uint64_t fileOffset;
+    uint64_t size = 0;
 };
 
 struct RelocationInfo {
@@ -130,6 +133,13 @@ public:
     // Re-parse the cache as the named dylib: its embedded Mach-O replaces the
     // cache's sections/symbols/imports so analysis targets a single image.
     virtual bool loadDyldCacheImage(const std::string& name) { (void)name; return false; }
+    // Raw carved bytes of the named embedded image ([fileOffset,
+    // fileOffset + size)); empty when the cache has no such image. The
+    // browser dialog loops over this for multi-select extraction.
+    virtual std::vector<uint8_t> getDyldCacheImageBytes(const std::string& name) const {
+        (void)name;
+        return {};
+    }
 
     static std::string guessLanguageFromArch(const std::string& arch, int bitness, bool bigEndian = false);
     static std::string guessCompilerSpecFromArch(const std::string& arch, int bitness);

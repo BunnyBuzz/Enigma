@@ -15,6 +15,7 @@
 #include "DisasmSearchBar.h"
 #include "CommandPaletteDialog.h"
 #include "AddressMinimap.h"
+#include "DyldCacheBrowserDialog.h"
 #include "SelectionManager.h"
 
 #include <QFileDialog>
@@ -44,6 +45,10 @@
 #include <ghidra/TaskMonitor.h>
 #include <ghidra/MessageLog.h>
 #include <ghidra/SymbolTable.h>
+#include <ghidra/Namespace.h>
+#include <ghidra/GolangSymbolAnalyzer.h>
+#include <ghidra/ObjcTypeMetadataAnalyzer.h>
+#include <map>
 #include <ghidra/ExternalManager.h>
 #include <ghidra/Disassembler.h>
 #include <sstream>
@@ -229,6 +234,9 @@ void MainWindow::createMenuBar() {
 
     auto* openProj = file->addAction(tr("Open &Project..."));
     connect(openProj, &QAction::triggered, this, &MainWindow::onOpenProject);
+
+    auto* dyldAct = file->addAction(tr("Browse Dyld Cache &Images..."));
+    connect(dyldAct, &QAction::triggered, this, &MainWindow::onBrowseDyldCache);
 
     file->addSeparator();
     auto* quit = file->addAction(tr("&Quit"));
@@ -1183,6 +1191,21 @@ void MainWindow::onOpenBinary() {
     loadBinary(path);
 }
 
+// G2: modal browser over dyld shared cache images (extract + targeted load).
+void MainWindow::onBrowseDyldCache() {
+    if (!binaryLoader_ || !binaryLoader_->isDyldCache()) {
+        QMessageBox::information(this, tr("Dyld Cache Images"),
+            tr("Load a dyld shared cache first."));
+        return;
+    }
+    DyldCacheBrowserDialog dlg(binaryLoader_.get(), this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    if (dlg.selectedImage().isEmpty()) return;
+    if (currentBinaryPath_.isEmpty()) return;
+    pendingDyldImage_ = dlg.selectedImage();
+    loadBinary(currentBinaryPath_);
+}
+
 void MainWindow::onSaveProject() {
     if (!program_) {
         console_->log("No program loaded to save.");
@@ -1481,6 +1504,7 @@ void MainWindow::loadBinary(const QString& path) {
     NAVLOG("path='%s'\n", path.toStdString().c_str());
     console_->log("> Loading: " + path);
     currentBinaryPath_ = path;
+    analysisDone_ = false;
     QApplication::processEvents();
 
     try {
@@ -1499,6 +1523,16 @@ void MainWindow::loadBinary(const QString& path) {
         loader->getFormatName().c_str(), loader->getArchitecture().c_str(),
         loader->getBitness(), loader->isBigEndian(),
         path.toStdString().c_str());
+
+    // G2: target a single dyld cache image when the browser requested it.
+    if (!pendingDyldImage_.isEmpty() && loader->isDyldCache()) {
+        if (loader->loadDyldCacheImage(pendingDyldImage_.toStdString())) {
+            console_->log("> Dyld image: " + pendingDyldImage_);
+        } else {
+            console_->log("Dyld image not found, showing full cache: " + pendingDyldImage_);
+        }
+    }
+    pendingDyldImage_.clear();
 
     if (patchList_) {
         patchList_->setDisassembler(ghidra::createDisassembler(
@@ -1828,6 +1862,10 @@ void MainWindow::loadBinary(const QString& path) {
         .arg(binaryLoader_->getBitness())
         .arg(binaryLoader_->getArchitecture().c_str())
         .arg(binaryLoader_->isBigEndian() ? " BE" : " LE"));
+    if (binaryLoader_->isDyldCache()) {
+        console_->log(QString("Dyld shared cache: %1 images - File > Browse Dyld Cache Images...")
+            .arg(binaryLoader_->getDyldCacheImages().size()));
+    }
 
     NAVLOG("calling runAnalysisAsync...\n");
     runAnalysisAsync();
@@ -1888,9 +1926,32 @@ void MainWindow::populateExplorer() {
     auto funcs = decompInterface_->getFunctions();
     NAVLOG("got %zu functions\n", funcs.size());
 
-    for (auto& f : funcs) {
-        uint64_t addr = f.entryAddress.getOffset();
-        explorer_->addEntry(root, addr, QString::fromStdString(f.name));
+    // G5: group dotted (Go-style "package.name") functions into package
+    // subfolders when more than one package is present.
+    {
+        std::map<QString, std::vector<std::pair<uint64_t, QString>>> pkgs;
+        std::vector<std::pair<uint64_t, QString>> plain;
+        for (auto& f : funcs) {
+            uint64_t addr = f.entryAddress.getOffset();
+            QString name = QString::fromStdString(f.name);
+            int dot = name.lastIndexOf('.');
+            if (dot > 0) pkgs[name.left(dot)].push_back({addr, name});
+            else plain.push_back({addr, name});
+        }
+        for (auto& p : plain)
+            explorer_->addEntry(root, p.first, p.second);
+        if (pkgs.size() > 1) {
+            for (auto& kv : pkgs) {
+                QTreeWidgetItem* folder = explorer_->addSubCategory(root, kv.first);
+                for (auto& e : kv.second)
+                    explorer_->addEntry(folder, e.first, e.second);
+            }
+        } else {
+            for (auto& kv : pkgs) {
+                for (auto& e : kv.second)
+                    explorer_->addEntry(root, e.first, e.second);
+            }
+        }
     }
 
     QString binaryName = QString::fromStdString(program_->getName());
@@ -1945,6 +2006,45 @@ void MainWindow::populateExplorer() {
                 if (!block) continue;
                 explorer_->addEntry(segsCat, block->getStart().getOffset(),
                     QString::fromStdString(block->getName()));
+            }
+        }
+    }
+
+    // G6: ObjC Classes tree from analyzer records (post-analysis only).
+    if (analysisDone_ && analysisMgr_) {
+        if (auto* a = analysisMgr_->getAnalyzer("Objective-C Type Metadata Analyzer")) {
+            if (auto* objc = dynamic_cast<ghidra::ObjcTypeMetadataAnalyzer*>(a)) {
+                auto classes = objc->getClasses();
+                auto protos = objc->getProtocols();
+                auto cats = objc->getCategories();
+                if (!classes.empty() || !protos.empty() || !cats.empty()) {
+                    QTreeWidgetItem* clsCat = explorer_->addCategory("Classes");
+                    for (auto& c : classes) {
+                        QTreeWidgetItem* cls =
+                            explorer_->addSubCategory(clsCat, QString::fromStdString(c.name));
+                        for (auto& m : c.methods) {
+                            uint64_t ia = static_cast<uint64_t>(m.impl.getOffset());
+                            explorer_->addEntry(cls, ia, QString::fromStdString(m.sel));
+                        }
+                        for (auto& iv : c.ivars) {
+                            QString t = QString("%1 : %2 @+%3").arg(
+                                QString::fromStdString(iv.name),
+                                QString::fromStdString(iv.type),
+                                QString::number(iv.offset));
+                            explorer_->addEntry(cls,
+                                static_cast<uint64_t>(c.clsAddr.getOffset()), t);
+                        }
+                    }
+                    for (auto& p : protos) {
+                        explorer_->addEntry(clsCat, static_cast<uint64_t>(p.addr.getOffset()),
+                            QString("<<%1>>").arg(QString::fromStdString(p.name)));
+                    }
+                    for (auto& ct : cats) {
+                        QString n = QString::fromStdString(ct.className) + "(" +
+                                    QString::fromStdString(ct.name) + ")";
+                        explorer_->addEntry(clsCat, static_cast<uint64_t>(ct.addr.getOffset()), n);
+                    }
+                }
             }
         }
     }
@@ -2087,6 +2187,7 @@ void MainWindow::onAnalysisFinished() {
         DBG("[onAnalysisFinished] program_ null, aborting\n");
         GUARD_EXIT("onAnalysisFinished"); return;
     }
+    analysisDone_ = true;
     {
         auto* fm = program_->getFunctionManager();
         auto* sym = program_->getSymbolTable();
@@ -2128,6 +2229,47 @@ void MainWindow::onAnalysisFinished() {
             DBG("[onAnalysisFinished] stringTable refresh threw: %s - CAUGHT\n", e.what());
         } catch (...) {
             DBG("[onAnalysisFinished] stringTable refresh threw unknown - CAUGHT\n");
+        }
+    }
+
+    // G7: Data Types dock picks up analyzer-registered types (e.g. /swift).
+    if (structureEditor_) {
+        try {
+            structureEditor_->setProgram(program_.get());
+        } catch (const std::exception& e) {
+            DBG("[onAnalysisFinished] structureEditor refresh threw: %s - CAUGHT\n", e.what());
+        } catch (...) {
+            DBG("[onAnalysisFinished] structureEditor refresh threw unknown - CAUGHT\n");
+        }
+    }
+
+    // G5: surface Go build metadata recovered by the analyzer.
+    if (analysisMgr_) {
+        try {
+            if (auto* a = analysisMgr_->getAnalyzer("Golang Symbols")) {
+                if (auto* go = dynamic_cast<ghidra::GolangSymbolAnalyzer*>(a)) {
+                    auto bi = go->getBuildInfo();
+                    if (bi.valid && !bi.goVersion.empty())
+                        console_->log(QString("Go toolchain: %1  module: %2")
+                            .arg(QString::fromStdString(bi.goVersion),
+                                 QString::fromStdString(bi.modulePath)));
+                    if (bi.valid && !bi.dependencies.empty()) {
+                        QStringList deps;
+                        for (auto& d : bi.dependencies) deps << QString::fromStdString(d);
+                        console_->log(QString("Go dependencies: %1").arg(deps.join(", ")));
+                    }
+                    auto pkgs = go->getPackages();
+                    if (!pkgs.empty()) {
+                        QStringList pl;
+                        for (auto& p : pkgs) pl << QString::fromStdString(p);
+                        console_->log(QString("Go packages: %1").arg(pl.join(", ")));
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            DBG("[onAnalysisFinished] go buildinfo log threw: %s - CAUGHT\n", e.what());
+        } catch (...) {
+            DBG("[onAnalysisFinished] go buildinfo log threw unknown - CAUGHT\n");
         }
     }
 

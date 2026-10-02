@@ -13,11 +13,16 @@
 
 #include "ghidra/GoBuildInfoParser.h"
 #include "ghidra/GoRttiParser.h"
+#include "ghidra/GolangSymbolAnalyzer.h"
 #include "ghidra/ProgramDB.h"
 #include "ghidra/AddressSpace.h"
 #include "ghidra/ProgramAddressFactory.h"
 #include "ghidra/Memory.h"
+#include "ghidra/SymbolTable.h"
+#include "ghidra/Symbol.h"
 #include "ghidra/TaskMonitor.h"
+#include "ghidra/MessageLog.h"
+#include "ghidra/AddressSet.h"
 #include "ghidra/Language.h"
 #include "ghidra/StandAloneDataTypeManager.h"
 
@@ -201,6 +206,105 @@ int main() {
         GoRttiParser::createDataTypes(types, &dtm);
         int typeCount = dtm.getDataTypes().size();
         TEST("createDataTypes added Go types", typeCount > 0);
+    }
+
+    // === Test 6 (G5): package records + build-info accessor ===
+    {
+        TEST("packageOf main", GolangSymbolAnalyzer::packageOf("main.main") == "main");
+        TEST("packageOf runtime", GolangSymbolAnalyzer::packageOf("runtime.foo") == "runtime");
+        TEST("packageOf module path",
+             GolangSymbolAnalyzer::packageOf("github.com/x/y.Func") == "github.com/x/y");
+        TEST("packageOf no dot", GolangSymbolAnalyzer::packageOf("nodot") == "");
+        TEST("packageOf leading dot", GolangSymbolAnalyzer::packageOf(".b") == "");
+    }
+    {
+        // Minimal Go 1.18+ 64-bit pclntab with 2 functions.
+        TestProgram tprog;
+        Memory* memory = tprog.prog.getMemory();
+        DefaultMemory* defaultMem = dynamic_cast<DefaultMemory*>(memory);
+        std::vector<uint8_t> tab(0x300, 0);
+        auto w64 = [&](size_t o, uint64_t v) { memcpy(&tab[o], &v, 8); };
+        auto w32 = [&](size_t o, uint32_t v) { memcpy(&tab[o], &v, 4); };
+        w32(0, 0xFFFFFFF0); // magic 1.18+
+        tab[4] = 0; tab[5] = 1; tab[6] = 8;
+        w64(7, 2);              // nfunc (detection reads here)
+        w64(15, 0);             // nfiles
+        // NOTE: the field parser reads textStart/funcnameOffset at the
+        // 1.16-style offsets below; 1.18 field layout is a follow-up.
+        w64(24, 0x400000);      // textStart
+        w64(32, 0x100);         // funcnameOffset -> 0x400100
+        // functab at 88: {entry, funcoff} x2; _func structs at 120/128.
+        w64(88, 0x400010); w64(96, 120);
+        w64(104, 0x400020); w64(112, 128);
+        w32(120, 0x10); w32(124, 0);   // entryOff, nameOff -> "main.main"
+        w32(128, 0x20); w32(132, 10);  // entryOff, nameOff -> "fmt.Println"
+        const char* n1 = "main.main";
+        const char* n2 = "fmt.Println";
+        memcpy(&tab[0x100], n1, strlen(n1) + 1);
+        memcpy(&tab[0x100 + 10], n2, strlen(n2) + 1);
+
+        Address start = tprog.addr(0x400000);
+        DefaultMemoryBlock* block = defaultMem->createInitializedBlock(
+            ".gopclntab", start, tab.size());
+        TEST("g5 pclntab block created", block != nullptr);
+        if (block) {
+            block->setRead(true);
+            block->setExecute(true);
+            block->putBytes(start, tab.data(), static_cast<int>(tab.size()));
+        }
+
+        GolangSymbolAnalyzer analyzer;
+        AddressSet set;
+        StubTaskMonitor monitor;
+        MessageLog log;
+        TEST("g5 analyzer added", analyzer.added(&tprog.prog, set, &monitor, log));
+        auto funcs = analyzer.getFunctions();
+        TEST("g5 two functions recovered", funcs.size() == 2);
+        bool mainOk = false, fmtOk = false;
+        for (const auto& f : funcs) {
+            if (f.name == "main.main" && f.package == "main" &&
+                f.entry.getOffset() == 0x400010)
+                mainOk = true;
+            if (f.name == "fmt.Println" && f.package == "fmt" &&
+                f.entry.getOffset() == 0x400020)
+                fmtOk = true;
+        }
+        TEST("g5 main.main record", mainOk);
+        TEST("g5 fmt.Println record", fmtOk);
+        auto pkgs = analyzer.getPackages();
+        TEST("g5 packages sorted unique",
+             pkgs.size() == 2 && pkgs[0] == "fmt" && pkgs[1] == "main");
+        SymbolTable* st = tprog.prog.getSymbolTable();
+        bool labels = false;
+        if (st) {
+            auto s1 = st->getSymbols(tprog.addr(0x400010));
+            auto s2 = st->getSymbols(tprog.addr(0x400020));
+            labels = !s1.empty() && !s2.empty();
+        }
+        TEST("g5 labels created", labels);
+    }
+    {
+        // Build-info accessor wired through added().
+        TestProgram tprog;
+        Memory* memory = tprog.prog.getMemory();
+        DefaultMemory* defaultMem = dynamic_cast<DefaultMemory*>(memory);
+        std::vector<uint8_t> buildInfo = buildGoBuildInfo();
+        Address start = tprog.addr(0x1000);
+        DefaultMemoryBlock* block = defaultMem->createInitializedBlock(
+            "go.buildinfo", start, buildInfo.size());
+        if (block) {
+            block->setRead(true);
+            block->putBytes(start, buildInfo.data(), static_cast<int>(buildInfo.size()));
+        }
+        GolangSymbolAnalyzer analyzer;
+        AddressSet set;
+        StubTaskMonitor monitor;
+        MessageLog log;
+        TEST("g5 buildinfo added", analyzer.added(&tprog.prog, set, &monitor, log));
+        auto bi = analyzer.getBuildInfo();
+        TEST("g5 buildinfo valid", bi.valid);
+        TEST("g5 buildinfo version", bi.goVersion == "go1.21.0");
+        TEST("g5 buildinfo module", bi.modulePath == "github.com/example/test");
     }
 
     std::cout << "Golang Pipeline Tests: " << passed << "/" << total << " passed.\n" << std::flush;

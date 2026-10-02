@@ -777,6 +777,92 @@ int main(int argc, char** argv) {
         TEST("dyld cache image0 entry", loader->getEntryPoint() > 0);
         TEST("dyld cache image1 loads as Mach-O", loader->loadDyldCacheImage("/usr/lib/libobjc.A.dylib"));
         TEST("dyld cache still isDyldCache", loader->isDyldCache());
+        // G2 browser columns: each image carved [fileOffset, fileOffset+size).
+        // image0: next image at 0x11000 -> size 0x10000; image1: runs to
+        // EOF (mapping fileSize is EOF-clamped) -> size thinSize.
+        bool imgSizeOk = (images.size() == 2);
+        for (const auto& img : loader->getDyldCacheImages()) {
+            if (img.name == "/usr/lib/libSystem.B.dylib" && img.size != 0x10000)
+                imgSizeOk = false;
+            if (img.name == "/usr/lib/libobjc.A.dylib" &&
+                img.size != thinSize)
+                imgSizeOk = false;
+            if (img.fileOffset + img.size > 0x11000 + thinSize) imgSizeOk = false;
+        }
+        TEST("dyld cache image sizes", imgSizeOk);
+        auto imgBytes = loader->getDyldCacheImageBytes("/usr/lib/libSystem.B.dylib");
+        TEST("dyld cache image0 bytes size", imgBytes.size() == 0x10000);
+        bool imgBytesOk = imgBytes.size() >= thinSize;
+        for (size_t bi = 0; imgBytesOk && bi < thinSize; bi++)
+            if (imgBytes[bi] != thinData[bi]) imgBytesOk = false;
+        TEST("dyld cache image0 bytes match", imgBytesOk);
+        TEST("dyld cache unknown bytes empty",
+             loader->getDyldCacheImageBytes("nope").empty());
+        std::remove(cachePath.c_str());
+    }
+
+    // ---- G2: new-header (arm64e) dyld cache ----
+    std::cout << "\n--- dyld Shared Cache (new header) ---" << std::endl;
+    {
+        std::ifstream thinFile(machoPath, std::ios::binary | std::ios::ate);
+        size_t thinSize = static_cast<size_t>(thinFile.tellg());
+        thinFile.seekg(0);
+        std::vector<uint8_t> thinData(thinSize);
+        thinFile.read(reinterpret_cast<char*>(thinData.data()), thinSize);
+        thinFile.close();
+
+        std::string cachePath = "test_dyld_cache_new.bin";
+        std::ofstream cf(cachePath, std::ios::binary);
+        auto wr64 = [&](uint64_t v) { cf.write((const char*)&v, 8); };
+        auto wr32 = [&](uint32_t v) { cf.write((const char*)&v, 4); };
+        auto padTo = [&](size_t off, size_t cur) {
+            if (off > cur) {
+                std::vector<uint8_t> pad(off - cur, 0);
+                cf.write((const char*)pad.data(), pad.size());
+            }
+        };
+
+        wr32(0x6A1A64A9);               // new-header magic (0x00)
+        wr32(0x50);                     // mappingOffset (0x04)
+        wr32(1);                        // mappingCount (0x08)
+        wr32(0);                        // imagesOffset, old layout ignored (0x0C)
+        wr32(0);                        // imagesCount, old layout ignored (0x10)
+        padTo(0x18, 20);
+        wr64(0x180000000);              // dyldBaseAddress (0x18)
+        padTo(0x40, 32);
+        wr32(0x80);                     // imagesOffset, new layout (0x40)
+        wr32(1);                        // imagesCount, new layout (0x44)
+        padTo(0x50, 0x48);
+        // mapping: {address, size, fileOffset, maxProt, initProt}
+        wr64(0x180000000); wr64(0x20000); wr64(0x1000); wr32(5); wr32(5);
+        padTo(0x80, 0x70);
+        // image: {address, modTime, inode, pathFileOffset, pad}
+        wr64(0x180000000); wr64(0); wr64(0); wr32(0xA0); wr32(0);
+        padTo(0xA0, 0xA0);
+        const char* nn = "/usr/lib/libSystem.B.dylib";
+        cf.write(nn, strlen(nn) + 1);
+        padTo(0x1000, 0xA0 + strlen(nn) + 1);
+        cf.write((const char*)thinData.data(), thinSize);
+        cf.close();
+
+        auto loader = ghidra::createLoader();
+        TEST("dyld new-header loaded", loader->load(cachePath));
+        TEST("dyld new-header isDyldCache", loader->isDyldCache());
+        auto images = loader->getDyldCacheImages();
+        TEST("dyld new-header one image",
+             images.size() == 1 && images[0].name == "/usr/lib/libSystem.B.dylib" &&
+             images[0].fileOffset == 0x1000);
+        // single image: runs to EOF (mapping fileSize is EOF-clamped).
+        TEST("dyld new-header image size",
+             images.size() == 1 && images[0].size == thinSize);
+        auto imgBytes = loader->getDyldCacheImageBytes("/usr/lib/libSystem.B.dylib");
+        bool imgBytesOk = imgBytes.size() == thinSize;
+        for (size_t bi = 0; imgBytesOk && bi < thinSize; bi++)
+            if (imgBytes[bi] != thinData[bi]) imgBytesOk = false;
+        TEST("dyld new-header image bytes", imgBytesOk);
+        TEST("dyld new-header image loads as Mach-O",
+             loader->loadDyldCacheImage("/usr/lib/libSystem.B.dylib") &&
+             loader->getFormatName() == "Mac OS X Mach-O");
         std::remove(cachePath.c_str());
     }
 

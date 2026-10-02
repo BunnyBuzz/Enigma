@@ -75,6 +75,7 @@ public:
 
 public slots:
     void onOpenBinary();
+    void onBrowseDyldCache();
     void onSaveProject();
     void onOpenProject();
     void onImportGhidraProject();
@@ -153,6 +154,8 @@ private:
     uint64_t currentAddr_ = 0;
     uint64_t graphFuncStart_ = 0; // function range shown in the graph view
     uint64_t graphFuncEnd_ = 0;
+    bool analysisDone_ = false; // true once analysis finished for program_
+    QString pendingDyldImage_;  // dyld image to select on next loadBinary
     int programVersion_ = 0;       // bumped on each loadBinary for stale-pointer detection
     QStack<uint64_t> backStack_;
     QStack<uint64_t> forwardStack_;

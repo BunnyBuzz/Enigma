@@ -12,11 +12,20 @@
 #include <ghidra/Processor.h>
 #include <ghidra/DataTypeManager.h>
 #include <ghidra/StructureDataType.h>
+#include <ghidra/CategoryPath.h>
 #include <ghidra/PointerDataType.h>
 #include <ghidra/IntegerDataType.h>
+#include <ghidra/BooleanDataType.h>
+#include <ghidra/ByteDataType.h>
+#include <ghidra/WordDataType.h>
+#include <ghidra/DWordDataType.h>
+#include <ghidra/QWordDataType.h>
+#include <ghidra/FloatDataType.h>
+#include <ghidra/DoubleDataType.h>
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <utility>
 #include <cctype>
 #include <algorithm>
 
@@ -168,10 +177,72 @@ static std::string sanitizeLabel(const std::string& s) {
     return out;
 }
 
+// Merge field records into the collected type list (G7 Data Types dock).
+static void mergeSwiftFields(std::vector<SwiftTypeMetadataAnalyzer::SwiftTypeInfo>& types,
+                             const std::string& name, int kind,
+                             const std::vector<SwiftTypeMetadataAnalyzer::SwiftFieldInfo>& fields) {
+    for (auto& t : types) {
+        if (t.name == name) {
+            if (t.kind < 0) t.kind = kind;
+            for (const auto& f : fields) {
+                bool dup = false;
+                for (const auto& e : t.fields) {
+                    if (e.name == f.name) { dup = true; break; }
+                }
+                if (!dup) t.fields.push_back(f);
+            }
+            return;
+        }
+    }
+    SwiftTypeMetadataAnalyzer::SwiftTypeInfo info;
+    info.name = name;
+    info.kind = kind;
+    info.fields = fields;
+    types.push_back(info);
+}
+
+// Best-effort Swift scalar -> DTM builtin mapping for struct fields.
+// Handles demangled dotted names ("Swift.Int64") and raw type codes
+// ("$sSi") that the simple demangler passes through.
+static std::pair<DataType*, int> mapSwiftFieldType(DataTypeManager* dtm,
+                                                   const std::string& typeName) {
+    std::string base = typeName;
+    size_t dot = base.rfind('.');
+    if (dot != std::string::npos) base = base.substr(dot + 1);
+    auto builtin = [&](const char* n) -> DataType* {
+        return dtm->getDataType(CategoryPath("/"), n);
+    };
+    std::string swift;
+    if (base == "$sSb" || base == "Bool") swift = "bool";
+    else if (base == "$sSi" || base == "Int" || base == "$sSu" || base == "UInt" ||
+             base == "Int64" || base == "UInt64") swift = "qword";
+    else if (base == "Int32" || base == "UInt32") swift = "dword";
+    else if (base == "Int16" || base == "UInt16") swift = "word";
+    else if (base == "Int8" || base == "UInt8") swift = "byte";
+    else if (base == "$sSf" || base == "Float") swift = "float";
+    else if (base == "$sSd" || base == "Double") swift = "double";
+    if (!swift.empty()) {
+        if (DataType* dt = builtin(swift.c_str()))
+            return {dt, dt->getLength()};
+        // The program DTM may not pre-register every builtin; construct it.
+        DataType* dt = nullptr;
+        if (swift == "bool") dt = new BooleanDataType(dtm);
+        else if (swift == "byte") dt = new ByteDataType(dtm);
+        else if (swift == "word") dt = new WordDataType(dtm);
+        else if (swift == "dword") dt = new DWordDataType(dtm);
+        else if (swift == "qword") dt = new QWordDataType(dtm);
+        else if (swift == "float") dt = new FloatDataType(dtm);
+        else if (swift == "double") dt = new DoubleDataType(dtm);
+        if (dt) return {dt, dt->getLength()};
+    }
+    return {nullptr, 0};
+}
+
 // Process a __swift5_types section block.
 static void processTypesSection(Memory* memory, SymbolTable* symTable,
                                  MemoryBlock* block, TaskMonitor* monitor,
-                                 int& typeCount, int& labelCount) {
+                                 int& typeCount, int& labelCount,
+                                 std::vector<SwiftTypeMetadataAnalyzer::SwiftTypeInfo>& outTypes) {
     Address cur = block->getStart();
     Address end = block->getEnd();
 
@@ -234,6 +305,8 @@ static void processTypesSection(Memory* memory, SymbolTable* symTable,
                         if (sym) {
                             ++labelCount;
                         }
+                        if (!demangled.empty())
+                            mergeSwiftFields(outTypes, demangled, kind, {});
                     }
                 }
             }
@@ -248,7 +321,8 @@ static void processTypesSection(Memory* memory, SymbolTable* symTable,
 // Field descriptors contain field records for struct/class/enum types.
 static void processFieldMetadataSection(Memory* memory, SymbolTable* symTable,
                                          MemoryBlock* block, TaskMonitor* monitor,
-                                         int& fieldCount, int& labelCount) {
+                                         int& fieldCount, int& labelCount,
+                                         std::vector<SwiftTypeMetadataAnalyzer::SwiftTypeInfo>& outTypes) {
     Address cur = block->getStart();
     Address end = block->getEnd();
     AddressSpace* space = cur.getAddressSpace();
@@ -300,6 +374,7 @@ static void processFieldMetadataSection(Memory* memory, SymbolTable* symTable,
 
         // Parse field records (each field record is 16 bytes minimum)
         Address fieldRecAddr(space, descAddr.getOffset() + 16);
+        std::vector<SwiftTypeMetadataAnalyzer::SwiftFieldInfo> recFields;
         for (uint32_t fi = 0; fi < numFields && fi < 256; ++fi) {
             if (monitor->isCancelled()) break;
 
@@ -322,7 +397,10 @@ static void processFieldMetadataSection(Memory* memory, SymbolTable* symTable,
 
             std::string fieldTypeName;
             if (fieldTypeRel != 0) {
-                Address ftAddr = resolveOffset(fieldRecAddr, fieldTypeRel);
+                // Relative offsets resolve against their own address, not
+                // the record start (this rel lives at fieldRecAddr + 4).
+                Address typeRelAddr(space, fieldRecAddr.getOffset() + 4);
+                Address ftAddr = resolveOffset(typeRelAddr, fieldTypeRel);
                 if (memory->getBlock(ftAddr)) {
                     std::string mangledType = readCString(memory, ftAddr);
                     fieldTypeName = demangleSwiftName(mangledType);
@@ -336,10 +414,17 @@ static void processFieldMetadataSection(Memory* memory, SymbolTable* symTable,
                                       SourceType::ANALYSIS);
                 ++labelCount;
                 ++fieldCount;
+                SwiftTypeMetadataAnalyzer::SwiftFieldInfo fi2;
+                fi2.name = fieldName;
+                fi2.typeName = fieldTypeName;
+                recFields.push_back(fi2);
             }
 
             fieldRecAddr = Address(space, fieldRecAddr.getOffset() + 16);
         }
+
+        if (!typeName.empty())
+            mergeSwiftFields(outTypes, typeName, -1, recFields);
 
         cur = Address(space, cur.getOffset() + 4);
     }
@@ -413,14 +498,16 @@ SwiftTypeMetadataAnalyzer::SwiftTypeMetadataAnalyzer()
 }
 
 bool SwiftTypeMetadataAnalyzer::canAnalyze(Program* program) const {
-    if (!program || !program->getLanguage()) return false;
+    if (!program) return false;
 
     // Check if compiler spec is Swift
-    std::string langId = program->getLanguageID().getIdAsString();
-    if (langId.find("swift") != std::string::npos ||
-        langId.find("Swift") != std::string::npos) return true;
+    if (program->getLanguage()) {
+        std::string langId = program->getLanguageID().getIdAsString();
+        if (langId.find("swift") != std::string::npos ||
+            langId.find("Swift") != std::string::npos) return true;
+    }
 
-    // Check for Swift sections in memory
+    // Check for Swift sections in memory (works without a Language object)
     if (program->getMemory()) {
         for (auto* block : program->getMemory()->getBlocks()) {
             std::string name = block->getName();
@@ -446,18 +533,25 @@ bool SwiftTypeMetadataAnalyzer::added(Program* program, const AddressSetView& se
     int labelCount = 0;
     int fieldCount = 0;
     int assocCount = 0;
+    std::vector<SwiftTypeInfo> types;
 
     for (auto* block : memory->getBlocks()) {
         if (monitor->isCancelled()) break;
         std::string name = block->getName();
         if (name == "__swift5_types" || name.find("__swift5_types") != std::string::npos) {
-            processTypesSection(memory, symbolTable, block, monitor, typeCount, labelCount);
+            processTypesSection(memory, symbolTable, block, monitor, typeCount, labelCount, types);
         } else if (name == "__swift5_fieldmd" || name.find("__swift5_fieldmd") != std::string::npos) {
-            processFieldMetadataSection(memory, symbolTable, block, monitor, fieldCount, labelCount);
+            processFieldMetadataSection(memory, symbolTable, block, monitor, fieldCount, labelCount,
+                                        types);
         } else if (name == "__swift5_assocty" || name.find("__swift5_assocty") != std::string::npos) {
             processAssociatedTypeSection(memory, symbolTable, block, monitor, assocCount);
         }
     }
+    types_ = types;
+
+    // Register collected types so the Data Types dock shows them (G7).
+    if (DataTypeManager* dtm = program->getDataTypeManager())
+        createDataTypes(dtm);
 
     if (typeCount > 0 || fieldCount > 0 || assocCount > 0) {
         Msg::info(getName(), "Discovered " + std::to_string(typeCount) +
@@ -467,6 +561,22 @@ bool SwiftTypeMetadataAnalyzer::added(Program* program, const AddressSetView& se
     }
 
     return true;
+}
+
+void SwiftTypeMetadataAnalyzer::createDataTypes(DataTypeManager* dtm) {
+    if (!dtm) return;
+    for (const auto& t : types_) {
+        if (t.name.empty()) continue;
+        if (dtm->getDataType(CategoryPath("/swift"), t.name)) continue;
+        StructureDataType* st = new StructureDataType(CategoryPath("/swift"), t.name, 0, dtm);
+        for (const auto& f : t.fields) {
+            if (f.name.empty()) continue;
+            auto mapped = mapSwiftFieldType(dtm, f.typeName);
+            if (!mapped.first || mapped.second <= 0) continue;
+            st->add(mapped.first, mapped.second, f.name, "");
+        }
+        dtm->addDataType(st, nullptr);
+    }
 }
 
 } // namespace ghidra

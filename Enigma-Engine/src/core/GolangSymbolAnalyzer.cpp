@@ -13,10 +13,12 @@
 #include <ghidra/Msg.h>
 #include <ghidra/GoBuildInfoParser.h>
 #include <ghidra/GoRttiParser.h>
+#include <ghidra/ProgramAddressFactory.h>
 
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <cstring>
 #include <cctype>
 
@@ -109,6 +111,34 @@ bool GolangSymbolAnalyzer::canAnalyze(Program* program) const {
     return langId.find("Golang") != std::string::npos || langId.find("golang") != std::string::npos;
 }
 
+std::string GolangSymbolAnalyzer::packageOf(const std::string& funcName) {
+    size_t dot = funcName.rfind('.');
+    if (dot == std::string::npos || dot == 0) return "";
+    return funcName.substr(0, dot);
+}
+
+std::vector<std::string> GolangSymbolAnalyzer::getPackages() const {
+    std::vector<std::string> pkgs;
+    for (const auto& f : functions_) {
+        if (!f.package.empty() &&
+            std::find(pkgs.begin(), pkgs.end(), f.package) == pkgs.end())
+            pkgs.push_back(f.package);
+    }
+    std::sort(pkgs.begin(), pkgs.end());
+    return pkgs;
+}
+
+void GolangSymbolAnalyzer::recordFunction(const std::string& name, const Address& entry) {
+    for (const auto& f : functions_) {
+        if (f.entry == entry) return;
+    }
+    GoFunctionInfo info{};
+    info.name = name;
+    info.package = packageOf(name);
+    info.entry = entry;
+    functions_.push_back(info);
+}
+
 void GolangSymbolAnalyzer::registerOptions(Options& options, Program* program) {
     options.registerBool(OUTPUT_SOURCE_INFO_OPTIONNAME, true, OUTPUT_SOURCE_INFO_DESC);
     options.registerBool(FIXUP_DUFF_FUNCS_OPTIONNAME, true, FIXUP_DUFF_FUNCS_DESC);
@@ -127,7 +157,12 @@ bool GolangSymbolAnalyzer::added(Program* program, const AddressSetView& set, Ta
     Memory* memory = program->getMemory();
     SymbolTable* symTable = program->getSymbolTable();
     Listing* listing = program->getListing();
-    AddressSpace* defaultSpace = program->getLanguage()->getDefaultSpace();
+    Language* lang = program->getLanguage();
+    AddressSpace* defaultSpace = lang ? lang->getDefaultSpace() : nullptr;
+    if (!defaultSpace) {
+        if (auto* paf = dynamic_cast<ProgramAddressFactory*>(program->getAddressFactory()))
+            defaultSpace = const_cast<AddressSpace*>(paf->getDefaultAddressSpace());
+    }
     if (!memory || !symTable || !listing || !defaultSpace) return true;
 
     bool is64 = (defaultSpace->getSize() == 64);
@@ -136,6 +171,7 @@ bool GolangSymbolAnalyzer::added(Program* program, const AddressSetView& set, Ta
 
     int totalFuncs = 0;
     int totalNames = 0;
+    functions_.clear();
 
     for (auto* block : memory->getBlocks()) {
         if (monitor && monitor->isCancelled()) break;
@@ -392,6 +428,7 @@ bool GolangSymbolAnalyzer::added(Program* program, const AddressSetView& set, Ta
                 if (!listing->isUndefined(entryAddr)) continue;
 
                 symTable->createLabel(entryAddr, funcName, SourceType::ANALYSIS);
+                recordFunction(funcName, entryAddr);
                 ++totalFuncs;
                 ++totalNames;
             }
@@ -488,6 +525,7 @@ bool GolangSymbolAnalyzer::added(Program* program, const AddressSetView& set, Ta
                                 if (possibleBlock && possibleBlock->isExecute()) {
                                     if (listing->isUndefined(possibleEntry)) {
                                         symTable->createLabel(possibleEntry, candidate, SourceType::ANALYSIS);
+                                        recordFunction(candidate, possibleEntry);
                                         ++totalFuncs;
                                         break;
                                     }
@@ -503,7 +541,8 @@ bool GolangSymbolAnalyzer::added(Program* program, const AddressSetView& set, Ta
     }
 
     // Use GoBuildInfoParser to extract build metadata
-    auto buildInfo = GoBuildInfoParser::findAndParse(memory);
+    buildInfo_ = GoBuildInfoParser::findAndParse(memory);
+    const auto& buildInfo = buildInfo_;
     if (buildInfo.valid) {
         Msg::info(getName(), "Go build info: version=" + buildInfo.goVersion +
                   " module=" + buildInfo.modulePath);

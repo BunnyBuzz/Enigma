@@ -10,6 +10,9 @@
 #include <ghidra/MessageLog.h>
 #include <ghidra/SourceType.h>
 #include <ghidra/Msg.h>
+#include <ghidra/FunctionManager.h>
+#include <ghidra/Function.h>
+#include <ghidra/PrototypeModel.h>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -193,6 +196,21 @@ bool SwiftDemanglerAnalyzer::added(Program* program, const AddressSetView& set, 
             if (!demangled.empty()) {
                 naming.assignAlias(sym->getAddress().getOffset(), demangled, SourceType::ANALYSIS);
                 ++count;
+                // G7: Swift functions use the swiftcall convention. Tag the
+                // Function object when one exists at the symbol address.
+                if (FunctionManager* fm = program->getFunctionManager()) {
+                    if (Function* func = fm->getFunctionAt(sym->getAddress())) {
+                        PrototypeModel* cc = fm->getCallingConvention("swiftcall");
+                        if (!cc) {
+                            fm->addCallingConvention(
+                                "swiftcall",
+                                std::make_unique<PrototypeModel>("swiftcall", "swiftcall"));
+                            cc = fm->getCallingConvention("swiftcall");
+                        }
+                        if (cc) func->setCallingConvention(cc);
+                        func->addTag("swiftcall");
+                    }
+                }
             }
         }
     }
