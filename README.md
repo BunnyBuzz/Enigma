@@ -1,6 +1,4 @@
-
-
-https://github.com/user-attachments/assets/a3983ba7-6fc3-4c89-9991-5a3b912b1416
+<img width="1920" height="1080" alt="mario" src="https://github.com/user-attachments/assets/636a5a9d-6a23-43b1-a2ef-f3ca2a2371a3" />
 
 
 
