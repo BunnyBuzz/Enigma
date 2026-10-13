@@ -50,6 +50,10 @@ struct SymbolInfo {
     uint64_t size;
     bool isFunction;
     bool isExternal;
+    // The ELF symbol type was STT_NOTYPE (0), not STT_FUNC. Linkers commonly
+    // emit undefined imported functions this way; retain the raw classification
+    // so relocations can still create external function records faithfully.
+    uint8_t elfSymbolType = 0xFF;
     // GP-6766: MIPS16e function (ELF STO_MIPS16 st_other flag). The loader
     // sets this for MIPS STT_FUNC symbols; populateProgram records a decode
     // range so SLEIGH uses 16-bit tables there (the native Capstone path has

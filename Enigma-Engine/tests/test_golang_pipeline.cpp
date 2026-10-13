@@ -218,6 +218,12 @@ int main() {
         TEST("packageOf leading dot", GolangSymbolAnalyzer::packageOf(".b") == "");
     }
     {
+        // canAnalyze: content-based detection (no Golang language object).
+        TestProgram empty;
+        GolangSymbolAnalyzer analyzer;
+        TEST("go canAnalyze empty false", !analyzer.canAnalyze(&empty.prog));
+    }
+    {
         // Minimal Go 1.18+ 64-bit pclntab with 2 functions.
         TestProgram tprog;
         Memory* memory = tprog.prog.getMemory();
@@ -258,6 +264,7 @@ int main() {
         StubTaskMonitor monitor;
         MessageLog log;
         TEST("g5 analyzer added", analyzer.added(&tprog.prog, set, &monitor, log));
+        TEST("g5 canAnalyze via gopclntab", analyzer.canAnalyze(&tprog.prog));
         auto funcs = analyzer.getFunctions();
         TEST("g5 two functions recovered", funcs.size() == 2);
         bool mainOk = false, fmtOk = false;

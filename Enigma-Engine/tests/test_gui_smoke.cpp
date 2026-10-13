@@ -149,8 +149,15 @@ static void testDyldDialog(BinaryLoader* loader) {
         filter->setText("");
     }
 
-    // Check first row + Load -> selectedImage().
-    tree->topLevelItem(0)->setCheckState(0, Qt::Checked);
+    // Check the libSystem row (find by text: view sorting may reorder)
+    // + Load -> selectedImage().
+    QTreeWidgetItem* sysItem = nullptr;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+        if (tree->topLevelItem(i)->text(0) == "/usr/lib/libSystem.B.dylib")
+            sysItem = tree->topLevelItem(i);
+    }
+    TEST("dialog libSystem row found", sysItem != nullptr);
+    if (sysItem) sysItem->setCheckState(0, Qt::Checked);
     bool invoked = QMetaObject::invokeMethod(&dlg, "onLoad", Qt::DirectConnection);
     TEST("dialog load invoked", invoked);
     TEST("dialog selected image",

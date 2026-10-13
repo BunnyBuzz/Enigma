@@ -193,6 +193,13 @@ FlowType* Disassembler::determineFlowType(const std::string& mnemonic, const std
         (mnemonic == "pop" && !operands.empty() && operands[0] == "pc")) {
         return const_cast<FlowType*>(&RefTypes::TERMINATOR);
     }
+    // ARM PLT stubs end in 'ldr pc, [reg, #imm]!' — an indirect return jump.
+    // Without marking it terminal, recursion falls into the embedded literal
+    // pool bytes and invents bogus instructions (e.g. 'ldrble sp, ...'),
+    // which also misaligns every subsequent instruction in the function.
+    if (mnemonic == "ldr" && !operands.empty() && operands[0] == "pc") {
+        return const_cast<FlowType*>(&RefTypes::TERMINATOR);
+    }
     return const_cast<FlowType*>(&RefTypes::FALL_THROUGH);
 }
 

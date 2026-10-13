@@ -790,3 +790,10 @@ cmp, cmpl, cmpi, cmpli, cmplw
 - **G2 dyld browser**: new `DyldCacheBrowserDialog` (checkbox multi-select, filter, name/address/offset/size columns, Extract-checked-to-directory via `getDyldCacheImageBytes`, Load-first-checked → `pendingDyldImage_` + full `loadBinary` reload so all views refresh through the normal path). File menu action + console hint with image count on cache load.
 - **G4/G8/G9 verify-only (no GUI changes)**: HexView/Memory Map read `mem->getBlocks()` (per-section blocks from `populateProgram`) so sparse `.romN` sections display automatically; Rust aliases + offcut labels are symbols consumed by `DisassemblyModel`/explorer/decompiler refresh; offcut refs are real references for XRefs.
 - **Suite: 77/77 green** (engine untouched by GUI edits; `enigma_gui` builds clean).
+
+## GUI offscreen smoke test (2026-09-22): 78/78 green
+- New `enigma_test_gui_smoke` (`tests/test_gui_smoke.cpp`, registered only when `ENABLE_GUI AND Qt6_FOUND`; forces `QT_QPA_PLATFORM=offscreen` in `main`). Covers `FunctionExplorer` subfolders (counts, recursive filter hide/show, nested + top-level highlight) and `DyldCacheBrowserDialog` over a synthetic dyld cache (row listing, size column, filter narrowing, check + Load → `selectedImage()`, byte-carve path). Widget sources compile into the test target so AUTOMOC covers their `Q_OBJECT` headers. 18/18 subtests; full suite 78/78.
+
+## Go analyzer gating fix (2026-09-22)
+
+- Found while diagnosing "no package folders in the GUI": `GolangSymbolAnalyzer::canAnalyze` required a `Golang` language object, but loaders never set one — so the analyzer never ran outside hand-built test programs and no Go labels (hence no dotted names, no folders) ever appeared. Fixed with content-based detection (`gopclntab`/`pclntab`/`go.buildinfo` block names, matching Ghidra behavior). Covered by `canAnalyze` true/false subtests in `test_golang_pipeline` (now 37/37). Full suite still 78/78 — no behavior change for non-Go binaries.

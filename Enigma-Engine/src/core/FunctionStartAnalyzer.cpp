@@ -231,28 +231,6 @@ static bool isValidFunctionStartCandidate(Program* program, const Address& addr,
     return true;
 }
 
-// Check if the given address is preceded by a function-boundary terminator
-// or padding byte that indicates a logical function start.
-static bool isAtFunctionBoundary(Memory* memory, const Address& addr) {
-    MemoryBlock* block = memory->getBlock(addr);
-    if (!block) return false;
-    if (addr == block->getStart()) return true;
-    Address prev = addr.subtract(1);
-    if (!prev.isValid()) return false;
-    MemoryBlock* prevBlock = memory->getBlock(prev);
-    if (prevBlock != block) return false;
-    uint8_t prevByte = 0;
-    try {
-        if (memory->getBytes(prev, &prevByte, 1) < 1) return false;
-    } catch (...) {
-        return false;
-    }
-    // Terminator opcodes: int3 (CC), ret (C3), near jmp (E9), short jmp (EB)
-    // Padding bytes: nop (90), zero (00)
-    return prevByte == 0xCC || prevByte == 0xC3 || prevByte == 0xE9 || prevByte == 0xEB ||
-           prevByte == 0x90 || prevByte == 0x00;
-}
-
 static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerPass,
                               std::vector<Address>& createdCandidates,
                               uint64_t& bytesExamined) {
@@ -316,8 +294,20 @@ static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerP
                 }
                 if (isInFunctionRanges(funcRanges, static_cast<uint64_t>(addr.getOffset()))) continue;
                 if (funcMgr->getFunctionAt(addr)) continue;
-                if (!isAtFunctionBoundary(memory, addr) &&
-                    !isValidFunctionStartCandidate(program, addr, arch, bitness, disassembler.get())) {
+                // GP-6766 parity audit: isValidFunctionStartCandidate is
+                // authoritative. The previous isAtFunctionBoundary() byte
+                // heuristic must not short-circuit it: it treats 0x00/0xCC/
+                // 0xC3/0xE9/0xEB as padding, but those are also common immediate
+                // and displacement bytes. In large_x86_64.elf the instruction
+                // before 0x4153f7 is `mov edi,0xa` (BF 0A 00 00 00), whose last
+                // byte is 0x00, so the address looked like a boundary and an
+                // interior address was carved into a second function -- which
+                // then truncated the real function to 8 of Ghidra's 1072
+                // instructions. The validator already accepts real padding and
+                // terminator predecessors (int3/nop/ud2/jmp/ret/call), so using
+                // it alone keeps recall while rejecting fallthrough interiors.
+                if (!isValidFunctionStartCandidate(program, addr, arch, bitness,
+                                                   disassembler.get())) {
                     continue;
                 }
                 try {

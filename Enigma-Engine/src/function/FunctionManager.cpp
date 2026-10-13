@@ -63,7 +63,10 @@ Function* FunctionManager::createFunction(const std::string& name, Address entry
             --it;
             // Check if this range overlaps with [newStart, newEnd]
             if (it->first <= newEnd && newStart <= it->second) {
-                throw std::invalid_argument("Overlapping function body");
+                throw std::invalid_argument("Overlapping function body: name='" + funcName +
+                    "' entry=0x" + std::to_string(entryPoint.getOffset()) +
+                    " new=[" + std::to_string(newStart) + "," + std::to_string(newEnd) +
+                    "] overlap=[" + std::to_string(it->first) + "," + std::to_string(it->second) + "]");
             }
         }
     }

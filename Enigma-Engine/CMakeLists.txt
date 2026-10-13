@@ -379,6 +379,12 @@ target_include_directories(enigma_dump_functions SYSTEM PRIVATE ${CMAKE_SOURCE_D
 target_compile_definitions(enigma_dump_functions PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
 enigma_apply_warning_policy(enigma_dump_functions)
 
+add_executable(enigma_dump_listing tools/enigma_dump_listing.cpp)
+target_link_libraries(enigma_dump_listing PRIVATE enigma_engine)
+target_include_directories(enigma_dump_listing SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/src/decompiler)
+target_compile_definitions(enigma_dump_listing PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
+enigma_apply_warning_policy(enigma_dump_listing)
+
 add_executable(enigma_naming_audit tools/enigma_naming_audit.cpp)
 target_link_libraries(enigma_naming_audit PRIVATE enigma_engine)
 target_include_directories(enigma_naming_audit SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/src/decompiler)

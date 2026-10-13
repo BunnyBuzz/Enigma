@@ -316,6 +316,37 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
             FlowType* ft = di.flowType;
             uint64_t nextOffset = currentAddr + di.length;
 
+            // On MIPS, every branch has one delay slot that always executes
+            // before control transfers. It is physically the instruction at
+            // nextOffset, so it belongs inside the current function body.
+            // Enigma's linear scan would otherwise stop at the branch and
+            // never emit it, leaving a one-instruction hole (the Ghidra
+            // fixture shows these strongly). Pre-emit the delay slot here.
+            auto emitMipsDelaySlot = [&](uint64_t addr) {
+                if (!isMips_) return;
+                Address ia(codeSpace, static_cast<int64_t>(addr));
+                if (listing->getInstructionAt(ia)) return;
+                MemoryBlock* block = mem->getBlock(ia);
+                if (!block || !block->isExecute()) return;
+                int got = mem->getBytes(ia, readBuf.data(), static_cast<int>(readBuf.size()));
+                if (got <= 0) return;
+                std::vector<uint8_t> bytes(readBuf.begin(), readBuf.begin() + got);
+                DisassembledInstruction delay = disassembler->disassembleOne(bytes, addr);
+                if (delay.length <= 0) return;
+                auto* delayInst = new Instruction(program, ia, delay.mnemonic, delay.length,
+                                                  const_cast<FlowType*>(&RefTypes::FALL_THROUGH));
+                for (size_t oi = 0; oi < delay.operands.size(); ++oi) {
+                    delayInst->setOperand(static_cast<int>(oi), delay.operands[oi]);
+                }
+                for (size_t oi = 0; oi < delay.operandScalars.size(); ++oi) {
+                    for (auto& scalar : delay.operandScalars[oi]) {
+                        if (scalar) delayInst->addOperandScalar(static_cast<int>(oi), scalar.release());
+                    }
+                }
+                listing->addInstruction(delayInst);
+                ++totalInstructions;
+            };
+
             // --- CALL (direct) ---
             if (ft->isCall() && !ft->isComputed()) {
                 if (!di.operands.empty()) {
@@ -346,12 +377,15 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
                     currentAddr = nextOffset;
                     continue;
                 } else {
-                    // Unconditional jump — linear path ends here
+                    // Unconditional jump — linear path ends here, but the MIPS
+                    // delay slot at nextOffset still executes as part of this function.
+                    emitMipsDelaySlot(nextOffset);
                     break;
                 }
             }
             // --- RETURN / TERMINAL ---
             else if (ft->isTerminal()) {
+                emitMipsDelaySlot(nextOffset);
                 break;
             }
             // --- INDIRECT CALL/JUMP ---
@@ -360,6 +394,7 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
                     currentAddr = nextOffset;
                     continue;
                 } else {
+                    emitMipsDelaySlot(nextOffset);
                     break;
                 }
             }

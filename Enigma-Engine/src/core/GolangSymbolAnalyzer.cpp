@@ -106,9 +106,28 @@ GolangSymbolAnalyzer::GolangSymbolAnalyzer()
 bool GolangSymbolAnalyzer::canAnalyze(Program* program) const {
     if (!program) return false;
     Language* lang = program->getLanguage();
-    if (!lang) return false;
-    std::string langId = lang->getLanguageID().toString();
-    return langId.find("Golang") != std::string::npos || langId.find("golang") != std::string::npos;
+    if (lang) {
+        std::string langId = lang->getLanguageID().toString();
+        if (langId.find("Golang") != std::string::npos || langId.find("golang") != std::string::npos)
+            return true;
+    }
+    // Content-based detection: Go binaries carry pclntab/buildinfo sections
+    // regardless of the selected language (loaders never set "Golang",
+    // so language-only detection would skip every real Go binary).
+    if (Memory* memory = program->getMemory()) {
+        for (auto* block : memory->getBlocks()) {
+            if (!block) continue;
+            std::string name = block->getName();
+            if (name.find("gopclntab") != std::string::npos ||
+                name.find("gopcln") != std::string::npos ||
+                name.find("pclntab") != std::string::npos ||
+                name.find("go.buildinfo") != std::string::npos ||
+                name.find("go_buildinfo") != std::string::npos ||
+                name.find("buildinfo") != std::string::npos)
+                return true;
+        }
+    }
+    return false;
 }
 
 std::string GolangSymbolAnalyzer::packageOf(const std::string& funcName) {

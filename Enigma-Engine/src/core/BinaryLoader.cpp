@@ -24,6 +24,7 @@
 #include "ghidra/CompilerSpecID.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <fstream>
 #include <cstring>
 #include <limits>
@@ -536,6 +537,92 @@ public:
             }
         }
 
+        // ELF's dynamic symbol table can declare imported functions as
+        // STT_NOTYPE (notably ARM/lld). Relocations still identify their GOT
+        // slots and PLT stubs; materialize those as external locations and
+        // external functions so thunk analysis and decompilation see the
+        // imported prototype/name rather than generic func_0x... entries.
+        if (formatName_ == "ELF" && !imports_.empty()) {
+            auto* elfExternals = program->getExternalManager();
+            auto* elfFunctions = program->getFunctionManager();
+            auto* elfSymbols = program->getSymbolTable();
+            auto* elfAddressFactory = program->getAddressFactory();
+            auto* externalSpace = elfAddressFactory
+                ? const_cast<AddressSpace*>(elfAddressFactory->getAddressSpace("EXTERNAL"))
+                : nullptr;
+            if (elfExternals && elfFunctions && elfSymbols) {
+                if (!externalSpace) {
+                    externalSpace = new GenericAddressSpace("EXTERNAL", 64,
+                        AddressSpace::TYPE_EXTERNAL, 0, 0, 0x7FFFFFFFLL);
+                    if (auto* programFactory =
+                            dynamic_cast<ProgramAddressFactory*>(elfAddressFactory))
+                        programFactory->addAddressSpace(externalSpace);
+                }
+                long nextExternalId = 0;
+                uint64_t nextExternalOffset = 0;
+                auto externalAddressFor = [&](const std::string& library,
+                                              const std::string& name) -> ExternalLocation* {
+                    if (auto* existing = elfExternals->getExternalLocation(library, name))
+                        return existing;
+                    Address addr(externalSpace,
+                                 static_cast<int64_t>(nextExternalOffset++));
+                    Namespace* global = elfSymbols->getGlobalNamespace();
+                    Namespace* libNs = elfSymbols->getNamespace(library, global);
+                    if (!libNs) {
+                        elfExternals->addExternalLibrary(library, "");
+                        libNs = elfSymbols->createNameSpace(global, library,
+                                                            SourceType::IMPORTED);
+                    }
+                    long symbolId = nextExternalId++;
+                    elfSymbols->createExternalSymbol(symbolId, name, addr, libNs,
+                                                      SourceType::IMPORTED, true);
+                    ExternalLocation* location = elfExternals->addExternalLocation(
+                        library, name, addr, symbolId, name, true);
+                    AddressSet body(addr, addr);
+                    Function* externalFunction = elfFunctions->createFunction(
+                        name, addr, body, SourceType::IMPORTED);
+                    if (externalFunction) externalFunction->setExternal(true);
+                    return location;
+                };
+
+                std::unordered_set<std::string> functionImports;
+                for (const auto& sym : symbols_) {
+                    if (!sym.isExternal || sym.name.empty()) continue;
+                    // STT_FUNC is unambiguously callable. STT_NOTYPE is also
+                    // used by common ARM toolchains for undefined functions;
+                    // relocation references below confirm they are imports.
+                    if (sym.isFunction || sym.elfSymbolType == 0)
+                        functionImports.insert(sym.name);
+                }
+                std::unordered_set<std::string> externalNames;
+                for (const auto& imp : imports_) {
+                    if (imp.address == 0 || imp.functionName.empty() ||
+                        imp.functionName == "(dynamic)" ||
+                        functionImports.find(imp.functionName) == functionImports.end())
+                        continue;
+                    const std::string library = imp.libraryName.empty()
+                        ? "(unknown)" : imp.libraryName;
+                    ExternalLocation* externalLocation = externalAddressFor(
+                        library, imp.functionName);
+                    if (!externalLocation) continue;
+                    externalNames.insert(imp.functionName);
+                    Address imageAddress(ramSpace, static_cast<int64_t>(imp.address));
+                    elfSymbols->createLabel(imageAddress, imp.functionName,
+                                            SourceType::IMPORTED);
+                    elfExternals->addExternalLocation(
+                        library, imp.functionName, externalLocation->getAddress(),
+                        externalLocation->getSymbolID(),
+                        imp.functionName, true);
+                }
+
+                // Some linkers resolve a PLT JUMP_SLOT relocation to a
+                // defined symbol in the same image (for example a local
+                // `fib` call routed through a PLT slot). This is not an
+                // imported external, so leave it as a normal image function.
+                // The import set above is restricted to undefined ELF symbols.
+            }
+        }
+
         // GP-5900: normal exports become labels at their image address;
         // forwarded exports (RVA inside the export directory) become an
         // external target function plus a thunk function in EXTERNAL space.
@@ -896,6 +983,16 @@ private:
         }
 
         parseELFSymbols();
+        // .symtab and .dynsym may both declare the same function; keep one.
+        {
+            std::vector<SymbolInfo> dedup;
+            std::unordered_set<std::string> seen;
+            for (auto& sym : symbols_) {
+                std::string key = sym.name + "@" + std::to_string(sym.address);
+                if (seen.insert(key).second) dedup.push_back(std::move(sym));
+            }
+            symbols_.swap(dedup);
+        }
         parseELFImports();
         parseELFRelocations();
 
@@ -1286,6 +1383,7 @@ private:
                 // GP-7057: external iff GLOBAL or WEAK binding and SHN_UNDEF section index
                 // (ElfSymbol.isExternal disregards symbol type, value and size)
                 sym.isExternal = (bind == 1 || bind == 2) && shndx == 0;
+                sym.elfSymbolType = stype;
                 // GP-6766: MIPS16e functions carry STO_MIPS16 (0xF0) in st_other.
                 // Gate on MIPS: st_other high bits mean other things elsewhere.
                 sym.isMips16 = (arch_ == "MIPS") && (stype == 2) && shndx != 0 &&
@@ -1346,6 +1444,7 @@ private:
                 // GP-7057: external iff GLOBAL or WEAK binding and SHN_UNDEF section index
                 // (ElfSymbol.isExternal disregards symbol type, value and size)
                 sym.isExternal = (bind == 1 || bind == 2) && shndx == 0;
+                sym.elfSymbolType = stype;
                 // GP-6766: see parseELF32Symbols (STO_MIPS16 st_other flag).
                 sym.isMips16 = (arch_ == "MIPS") && (stype == 2) && shndx != 0 &&
                                ((stOther & 0xF0) == 0xF0);
