@@ -1,4 +1,5 @@
-<img width="1920" height="1080" alt="mario" src="https://github.com/user-attachments/assets/636a5a9d-6a23-43b1-a2ef-f3ca2a2371a3" />
+<img width="1920" height="1015" alt="image" src="https://github.com/user-attachments/assets/0423f341-b101-4f81-aef0-7def8af5df61" />
+<img width="1920" height="1020" alt="image" src="https://github.com/user-attachments/assets/fda40f45-f793-4cc4-83fb-b3359d0af933" />
 
 
 
