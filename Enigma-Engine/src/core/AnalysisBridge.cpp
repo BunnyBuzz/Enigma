@@ -583,17 +583,20 @@ ghidra_decompiler::Datatype* AnalysisBridge::resolveTypeName(const std::string& 
     else if (typeName == "BYTE"  || typeName == "CHAR"  || typeName == "char")  { auto* t = tf->getBase(1, ghidra_decompiler::TYPE_UINT); typeCache_[typeName] = t; return t; }
     else if (typeName == "WORD"  || typeName == "wchar_t" || typeName == "WCHAR" ||
              typeName == "short" || typeName == "SHORT" || typeName == "USHORT") { auto* t = tf->getBase(2, ghidra_decompiler::TYPE_UINT); typeCache_[typeName] = t; return t; }
-    else if (typeName == "INT"   || typeName == "int"   || typeName == "LONG"  ||
-             typeName == "long"  || typeName == "DWORD" || typeName == "UINT"  ||
-             typeName == "ULONG" || typeName == "INT32" || typeName == "UINT32"||
-             typeName == "BOOL32"|| typeName == "HRESULT"||typeName == "NTSTATUS"||
-             typeName == "COLORREF"||typeName == "LSTATUS"||typeName == "ATOM" ||
-             typeName == "REGSAM"|| typeName == "SECURITY_INFORMATION")         { auto* t = tf->getBase(4, ghidra_decompiler::TYPE_UINT); typeCache_[typeName] = t; return t; }
-    else if (typeName == "LONGLONG"  || typeName == "ULONGLONG" || typeName == "INT64" ||
-             typeName == "UINT64"    || typeName == "DWORD64"    || typeName == "DWORD_PTR"||
-             typeName == "LONG_PTR"  || typeName == "ULONG_PTR"  || typeName == "SIZE_T"  ||
-             typeName == "size_t"    || typeName == "LARGE_INTEGER"||typeName == "ULARGE_INTEGER"||
-             typeName == "time_t")                                             { auto* t = tf->getBase(8, ghidra_decompiler::TYPE_UINT); typeCache_[typeName] = t; return t; }
+    else if (typeName == "INT"   || typeName == "int"   || typeName == "INT32" ||
+             typeName == "LONG"  || typeName == "long"  || typeName == "HRESULT" ||
+             typeName == "NTSTATUS" || typeName == "SCODE" || typeName == "BOOL32")
+                                                                              { auto* t = tf->getBase(4, ghidra_decompiler::TYPE_INT); typeCache_[typeName] = t; return t; }
+    else if (typeName == "UINT"  || typeName == "UINT32"|| typeName == "DWORD" ||
+             typeName == "ULONG" || typeName == "COLORREF"||typeName == "LSTATUS"||
+             typeName == "ATOM"  || typeName == "REGSAM"|| typeName == "SECURITY_INFORMATION")
+                                                                              { auto* t = tf->getBase(4, ghidra_decompiler::TYPE_UINT); typeCache_[typeName] = t; return t; }
+    else if (typeName == "LONGLONG"  || typeName == "INT64" || typeName == "LONG64" ||
+             typeName == "LONG_PTR"  || typeName == "LARGE_INTEGER" || typeName == "time_t") { auto* t = tf->getBase(8, ghidra_decompiler::TYPE_INT); typeCache_[typeName] = t; return t; }
+    else if (typeName == "ULONGLONG" || typeName == "UINT64" || typeName == "DWORD64" ||
+             typeName == "DWORD_PTR" || typeName == "ULONG_PTR" || typeName == "SIZE_T"  ||
+             typeName == "size_t"    || typeName == "ULARGE_INTEGER")
+                                                                              { auto* t = tf->getBase(8, ghidra_decompiler::TYPE_UINT); typeCache_[typeName] = t; return t; }
     else if (typeName == "float"  || typeName == "FLOAT")                       { auto* t = tf->getBase(4, ghidra_decompiler::TYPE_FLOAT); typeCache_[typeName] = t; return t; }
     else if (typeName == "double" || typeName == "DOUBLE"||typeName=="LONGDOUBLE") { auto* t = tf->getBase(8, ghidra_decompiler::TYPE_FLOAT); typeCache_[typeName] = t; return t; }
     else if (typeName == "SOCKET" || typeName == "HANDLE" || typeName == "HANDLE" ||
@@ -722,6 +725,20 @@ void AnalysisBridge::bridgeImportSignatures() {
     // or "CloseHandle_thunk"; strip decorations before TypeDatabase lookup.
     int totalFuncs = 0, typeApplied = 0;
 
+    // Import thunks keep Ghidra-style void(void) signatures; their prototypes
+    // live on the external declarations and call sites instead. Resolve the
+    // program-side thunk set once (mapped addresses) for the skip below.
+    std::unordered_set<uint64_t> thunkAddrs;
+    if (FunctionManager* fm = program_->getFunctionManager()) {
+        FunctionIterator fit = fm->getFunctions(true);
+        while (fit.hasNext()) {
+            Function* func = fit.next();
+            if (func && func->isThunk())
+                thunkAddrs.insert(mapAddress(static_cast<uint64_t>(
+                    func->getEntryPoint().getOffset())));
+        }
+    }
+
     for (ghidra_decompiler::MapIterator it = globalScope->begin();
          it != globalScope->end(); ++it) {
         const ghidra_decompiler::SymbolEntry* entry = *it;
@@ -741,6 +758,29 @@ void AnalysisBridge::bridgeImportSignatures() {
         // Skip auto-generated names
         if (funcName.rfind("func_0x", 0) == 0)
             continue;
+
+        // Skip import thunks: like Ghidra they keep void(void) signatures
+        // here; the import prototype applies at call sites instead.
+        if (thunkAddrs.find(static_cast<uint64_t>(fd->getAddress().getOffset())) !=
+            thunkAddrs.end())
+            continue;
+
+        // Skip user-defined image functions: their signatures come from
+        // inference (Ghidra likewise does not apply library prototypes to
+        // user code without a function-ID match). Forcing library types
+        // onto them perturbs inference with casts (audit: fib INT broke
+        // aarch64_fib's consistent inferred world). Library prototypes
+        // apply to externals and at call sites only.
+        {
+            Function* pfunc = nullptr;
+            if (FunctionManager* fm = program_->getFunctionManager()) {
+                Address pa(getRamSpace(),
+                           static_cast<int64_t>(fd->getAddress().getOffset()));
+                pfunc = fm->getFunctionAt(pa);
+            }
+            if (pfunc && !pfunc->isExternal() && !pfunc->isThunk())
+                continue;
+        }
 
         // Strip import name decorations for TypeDatabase lookup
         std::string cleanName = cleanImportName(funcName);
@@ -774,7 +814,7 @@ void AnalysisBridge::bridgeImportSignatures() {
             ? static_cast<int>(paramTypes.size()) : -1;
 
         for (size_t i = 0; i < paramTypes.size(); i++)
-            pieces.innames.push_back("param" + std::to_string(i));
+            pieces.innames.push_back("param_" + std::to_string(i + 1));
 
         pieces.model = arch_->defaultfp;
 

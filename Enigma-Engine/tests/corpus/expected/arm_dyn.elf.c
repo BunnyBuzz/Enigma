@@ -142,3 +142,11 @@ int32_t __stdcall fib(int32_t param_1)
     return param_1 + v_2;
 }
 
+void __stdcall func_0x103a0()
+{
+                    
+                    
+    (*ptr_0x304d4)();
+    return;
+}
+

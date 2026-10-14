@@ -39,6 +39,8 @@
 #include <ghidra/AddressSet.h>
 #include <ghidra/AnalysisBridge.h>
 #include <ghidra/TypeDatabase.h>
+#include <ghidra/FunctionDiscoveryAnalyzer.h>
+#include <ghidra/FunctionManager.h>
 
 using namespace ghidra_decompiler;
 
@@ -440,8 +442,10 @@ static void applyTypeDatabaseToCallSpecs(Funcdata* fd, ghidra::TypeDatabase* typ
         if (tn == "BOOL" || tn == "BOOLEAN" || tn == "BYTE" || tn == "UCHAR") return tf->getBase(1, TYPE_UINT);
         if (tn == "WORD" || tn == "USHORT" || tn == "WCHAR" || tn == "OLECHAR") return tf->getBase(2, TYPE_UINT);
         if (tn == "DWORD" || tn == "UINT" || tn == "ULONG" || tn == "DWORD32") return tf->getBase(4, TYPE_UINT);
-        if (tn == "DWORD64" || tn == "ULONGLONG" || tn == "QWORD" || tn == "ULONG64") return tf->getBase(8, TYPE_UINT);
+        if (tn == "DWORD64" || tn == "ULONGLONG" || tn == "QWORD" || tn == "ULONG64" || tn == "UINT64") return tf->getBase(8, TYPE_UINT);
         if (tn == "DWORD_PTR" || tn == "ULONG_PTR" || tn == "SIZE_T" || tn == "LPARAM" || tn == "WPARAM" || tn == "LRESULT") return tf->getBase(ptrSize, TYPE_UINT);
+        if (tn == "size_t") return tf->getBase(ptrSize, TYPE_UINT);
+        if (tn == "ssize_t") return tf->getBase(ptrSize, TYPE_INT);
         if (tn == "UINT_PTR") return tf->getBase(ptrSize, TYPE_UINT);
         // --- signed integer types ---
         if (tn == "CHAR" || tn == "int8" || tn == "INT8") return tf->getBase(1, TYPE_INT);
@@ -584,6 +588,11 @@ int main(int argc, char** argv) {
 
     // Auto-detect PE/ELF format via BinaryLoader
     bool isPE = false;
+    // NOTE: isPE is set for any successfully loaded binary (misnomer kept for
+    // the heuristics tuned around it). Use isPeFormat for genuinely PE-only
+    // rules (e.g. '_' prefix implying CRT internals — ELF glibc imports like
+    // ___cxa_atexit are real functions to show, not CRT to hide).
+    bool isPeFormat = false;
     auto bloader = ghidra::createLoader();
     std::map<uint64_t, std::string> symbolNames;
     uint64_t detectedBase = 0;
@@ -591,6 +600,7 @@ int main(int argc, char** argv) {
     std::vector<ghidra::SectionInfo> peSections; // saved before bloader is moved
     if (bloader->load(binary)) {
         isPE = true;
+        isPeFormat = (bloader->getFormatName() == "PE");
         detectedBase = inferLoaderBase(*bloader);
         detectedEntry = bloader->getEntryPoint();
         if (!userSetLang) {
@@ -630,7 +640,6 @@ int main(int argc, char** argv) {
         // file, not function VAs, so the IAT read is skipped for ELF.
         {
             auto imps = bloader->getImports();
-            bool isPeFormat = bloader->getFormatName() == "PE";
             if (std::getenv("ENIGMA_DEBUG"))
                 std::cerr << "  Imports: " << imps.size() << "\n";
             for (const auto& imp : imps) {
@@ -704,6 +713,26 @@ int main(int argc, char** argv) {
             }
 
             if (bloader->populateProgram(analysisProgram.get())) {
+                // FunctionDiscovery pre-pass (mirrors enigma_dump_functions):
+                // seed loader-named functions (symbols, and import-named PLT
+                // stubs) before analysis so later passes extend them instead
+                // of carving auto-named func_0x... entries over them. The
+                // default analyzer set's FunctionDiscoveryAdapter carries no
+                // loader, so without this ARM PLT stubs stay auto-named and
+                // the main heuristic below misfires on them (arm_dyn: fib's
+                // stub became main).
+                {
+                    ghidra::FunctionDiscoveryOptions fdOpts;
+                    fdOpts.includeExternalInFunctionManager = true;
+                    ghidra::FunctionDiscoveryAnalyzer fdAnalyzer(fdOpts);
+                    fdAnalyzer.analyzeLoader(*bloader);
+                    auto* fm = analysisProgram->getFunctionManager();
+                    auto* af = analysisProgram->getAddressFactory();
+                    if (fm && af) {
+                        fdAnalyzer.applyTo(*fm, const_cast<ghidra::AddressSpace*>(
+                            af->getDefaultAddressSpace()));
+                    }
+                }
                 // Phase 1: Run full analysis pipeline + extract names into symbolNames
                 ghidra::AnalysisBridge bridge(analysisProgram.get(), nullptr, symbolNames,
                     baseAddr, detectedBase, userSetBase);
@@ -775,7 +804,12 @@ int main(int argc, char** argv) {
         // code labels become LabSymbols, read-only memory ranges are marked.
         // Create TypeDatabase for import/export type bridging (lives for full decompile scope)
         std::unique_ptr<ghidra::TypeDatabase> typeDB;
-        if (isPE)
+        // Platform-correct DB (Linux table carries glibc prototypes; Windows
+        // table lacks them, so ELF runs previously got no import types).
+        // Magic-based detection handles extensionless names; Windows stays
+        // the fallback for anything successfully loaded but unrecognized.
+        typeDB = ghidra::createTypeDatabaseForPlatform(ghidra::detectPlatform(binary));
+        if (!typeDB && isPE)
             typeDB = ghidra::createWindowsTypeDatabase();
 
         if (analysisProgram && !noBridge) {
@@ -1304,10 +1338,14 @@ int main(int argc, char** argv) {
             if (crtExact.count(name)) return true;
             for (const auto& p : crtPrefixes)
                 if (name.find(p) == 0) return true;
-            // HEURISTIC: In PE/ELF binaries, names starting with '_' are reserved
+            // HEURISTIC: In PE binaries, names starting with '_' are reserved
             // for the C/C++ implementation (CRT internals, compiler helpers).
             // Real user code almost never uses a leading underscore.
-            if (!noCrt && isPE && name[0] == '_') return true;
+            // ELF-only: glibc imports routinely start with '_' (e.g.
+            // ___cxa_atexit, __libc_init) and must NOT be hidden — they are
+            // real PLT functions. Gate on the true format, not isPE (which
+            // is set for any loaded binary).
+            if (!noCrt && isPeFormat && name[0] == '_') return true;
             return false;
             (void)noCrt;
         };
@@ -1873,10 +1911,24 @@ int main(int argc, char** argv) {
                 if (adj>bestConf) { bestConf=adj; bestMainAddr=mc.first; auto ei=mainEvidence.find(mc.first); if (ei!=mainEvidence.end()) bestEv=ei->second; }
             }
             if (bestMainAddr!=0) {
-                symbolNames[bestMainAddr]="main";
+                // Never clobber a meaningful name: only an auto-named
+                // function may become main. Import/symbol-derived names
+                // (e.g. a PLT stub named after its JUMP_SLOT relocation)
+                // must survive — the engine's MainRecognitionAnalyzer obeys
+                // the same rule. (arm_dyn: fib's stub won the tie-break by
+                // lowest address and was misrenamed main.)
+                auto siChk=symbolNames.find(bestMainAddr);
+                bool autoNamed=(siChk==symbolNames.end()||
+                    siChk->second.rfind("sub_0x",0)==0||
+                    siChk->second.rfind("func_0x",0)==0||
+                    siChk->second.rfind("function_0x",0)==0);
+                if (autoNamed) symbolNames[bestMainAddr]="main";
                 if (std::getenv("ENIGMA_DEBUG")) {
                     auto si=symbolNames.find(bestMainAddr);
-                    std::cerr<<"[MAIN] Selected: 0x"<<std::hex<<bestMainAddr<<std::dec<<" -> main\n[MAIN] Confidence: "<<bestConf<<"\n";
+                    std::cerr<<"[MAIN] Selected: 0x"<<std::hex<<bestMainAddr<<std::dec
+                             <<(autoNamed?" -> main":" (kept '"+
+                                 (si!=symbolNames.end()?si->second:"?")+"', not auto-named)")
+                             <<"\n[MAIN] Confidence: "<<bestConf<<"\n";
                     for (auto& e:bestEv) std::cerr<<"[MAIN]   "<<e.reason<<" +"<<e.weight<<"\n";
                 }
             }

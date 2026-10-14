@@ -4,7 +4,7 @@ void __fastcall entry()
     uint32_t v_2;
     uint8_t *v_3;
     code *unaff_RBX;
-    uint64_t *v_4;
+    code **v_4;
     int64_t v_5;
     int32_t v_6;
     code *v_7;
@@ -12,9 +12,9 @@ void __fastcall entry()
     uint8_t *unaff_R13;
     int64_t unaff_retaddr;
     uint8_t local_0x8_00 [32];
-    uint64_t local_0x8;
+    code *local_0x8;
     v_5 = 0;
-    local_0x8 = 0x4038c7;
+    local_0x8 = main;
     v_3 = local_0x8_00;
     v_4 = &local_0x8;
     v_7 = (code *)0x4042ea;
@@ -31,7 +31,7 @@ void __fastcall entry()
         *(int64_t *)((int64_t)v_4 + -0x10) = unaff_R12;
         *(uint64_t *)((int64_t)v_4 + -0x18) = v_1;
         *(code **)((int64_t)v_4 + -0x20) = unaff_RBX;
-        *(uint64_t *)((int64_t)v_4 + -0x28) = 0x4bedb2;
+        *(code **)((int64_t)v_4 + -0x28) = func_0x4bedb2;
         v_5 = (int64_t)v_6;
         unaff_R13 = (uint8_t *)(unaff_retaddr + 8 + v_5 * 8);
         *(uint64_t *)((int64_t)v_4 + -0x30) = 0x4bedcf;
@@ -42,7 +42,7 @@ void __fastcall entry()
         *(uint64_t *)((int64_t)v_4 + -0x30) = 0x4bede0;
         func_0x400130();
         unaff_RBX = v_7;
-        v_4 = (uint64_t *)((int64_t)v_4 + -0x28);
+        v_4 = (code **)((int64_t)v_4 + -0x28);
         v_7 = (code *)(uint64_t)v_2;
         unaff_R12 = unaff_retaddr;
     } while( true );

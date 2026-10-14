@@ -135,3 +135,11 @@ int32_t __fastcall fib()
     return unaff_EDI + v_2;
 }
 
+void __fastcall func_0x1550()
+{
+                    
+                    
+    (*ptr_0x36e8)();
+    return;
+}
+

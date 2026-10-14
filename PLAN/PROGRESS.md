@@ -797,3 +797,26 @@ cmp, cmpl, cmpi, cmpli, cmplw
 ## Go analyzer gating fix (2026-09-22)
 
 - Found while diagnosing "no package folders in the GUI": `GolangSymbolAnalyzer::canAnalyze` required a `Golang` language object, but loaders never set one â€” so the analyzer never ran outside hand-built test programs and no Go labels (hence no dotted names, no folders) ever appeared. Fixed with content-based detection (`gopclntab`/`pclntab`/`go.buildinfo` block names, matching Ghidra behavior). Covered by `canAnalyze` true/false subtests in `test_golang_pipeline` (now 37/37). Full suite still 78/78 â€” no behavior change for non-Go binaries.
+
+## Disassembler parity follow-up (2026-10-13): mid-function split + silent analysis-skip, 78/78 green
+- **Mid-function split root cause**: worst large_x86_64 case (func_0x4153e5 kept 8 of Ghidra's 1072 instrs) was indPatternStarts() letting the isAtFunctionBoundary() byte heuristic (trailing 0x00 of mov edi,0xa) short-circuit the authoritative fallthrough validator. Heuristic deleted; large_x86_64 now 2856 shared funcs, 116049 semantic matches, 0 mismatches.
+- **Silent analysis-skip**: the .symtab/.dynsym dedup crash fix exposed that enigma_decompile_full caught the populate throw and silently skipped analysis for dyn ELFs (old baselines = loader names only). Tool fixes in 	ools/enigma_decompile_full.cpp: FunctionDiscovery pre-pass with loader (mirrors dump_functions), auto-name guard on main-rename, PE-only gate for the '_' CRT filter (new isPeFormat; isPE semantics untouched).
+- **Baselines regenerated with Ghidra-verified justification**: arm +8 (PLT0), x64 +8 (IAT thunk = Ghidra 0x101550), aarch64_pie (13 PLT thunks func_0x to import names; no add/remove). Listing parity re-verified on all fixtures (0 mismatches). Full suite 78/78.
+
+## Disassembler parity follow-up 2 (2026-10-13): REX patterns + body clamp, 78/78 green
+- **Unreachable-function discovery**: 130/296 Ghidra-only large_x86_64 functions share REX push-pair prologues with zero references. Added 11 patterns to getProloguePatterns() (validator still authoritative). Shared funcs 2856 -> 2987; new extras verified real (Ghidra-undecoded regions, post-RET boundary).
+- **Body clamp**: new functions stalled at ~120 instrs because the listing exporter only emits body-covered instructions and kBodyFinalizerMaxScan was 512. Raised to 8192 (next-entry clamp retained).
+- **Result**: semantic matches 116049 -> 167393 (90.4%, 0 mismatches). large baseline 1-line change (Ghidra-confirmed 0x4bedb2 now referenced). Small-fixture parity unchanged. Remaining gap is diffuse indirect-branch targets (jump-table recovery = decompiler/graph scope).
+
+## Decompiler parity audit started (2026-10-13): harness + baselines, 78/78 green
+- **Harness**: 	ools/headless/DumpDecompile.java (per-function .c + index.csv, GHIDRA_DECOMP_ONLY filter), 	ools/run_decomp_audit.ps1, 	ools/parity_decomp_diff.py (M1 set / M2 naming / M3 success / M4 signatures / M5 callees / M6 similarity). Full record in PLAN/PARITY_AUDIT_DECOMPILER.md.
+- **Baselines**: arm 12/12 (M5 1.00), x64 13/13 (M5 1.00), pie 29/30 (M5 0.92), mips 2/2, ppc 12/12, large 28-sample (M5 0.78/0.81). Zero halt_baddata everywhere.
+- **Fixes from findings**: noreturn tables extended (Linux/Mac/Windows: __stack_chk_fail et al — was merging init fragments); main-rename auto-name guard; FunctionDiscovery pre-pass in decompile tool; '_' CRT filter PE-only.
+- **Ranked next**: (1) Linux/Mac getFunctionType stubs — biggest M4 lever, needs glibc table; (2) MIPS/PPC GOT-indirect resolution (M5 0.00); (3) jump-table recovery; (4) stub-pattern tails need flow-ref gate (func_0x406e91 case); (5) .init naming.
+- **Disassembler side-effects (same session)**: AArch64 BTI/PAC/sub-sp/STP + PLT0 patterns, cross-arch terminator set, '#'-immediate + last-operand target parsing, entry 1-byte body, AArch64 alignment gate, landing-pad rule, body clamp 512->8192. Large listing 69.5%->90.4% matches, pie 65->586 matched / 29 of 30 entries, all small fixtures still perfect.
+
+## Decompiler parity audit: prototype work (2026-10-13), 78/78 green
+- **glibc table + platform DB selection**: 40 verified signatures in LinuxTypeDatabase; tool picks DB via detectPlatform (was Windows-always). Tool resolver extended (UINT64/size_t/ssize_t).
+- **Signature discipline**: import thunks keep void(void) (flags preserved across BodyFinalizer recreate); library prototypes never apply to user-defined image functions (forcing INT onto user fib demonstrably perturbs inference; two independent inferences agreed on unsigned); bridge params use param_1 style.
+- **resolveTypeName signedness fix**: INT/LONG/HRESULT were all mapping to unsigned; split correctly (also INT64/LONG_PTR/time_t).
+- **Measured**: near-output-neutral by design (fixtures' signatures were inference-carried); only x64 fib +1 param line changed in corpus (Ghidra-agreed) plus the pre-existing thunk block. M4 still measures inference-vs-inference; closing it needs FID-gated application. Decompiler audit doc updated with baselines for all 10 fixtures.

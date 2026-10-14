@@ -24,7 +24,14 @@
 
 namespace ghidra {
 
-static constexpr uint64_t kBodyFinalizerMaxScan = 512;
+// Maximum body extension past the entry when the next function entry is far
+// away. 512 truncated large real functions (large_x86_64.elf: ~46 functions
+// stalled at ~120 decoded instructions each although the sweep had decoded
+// everything — the listing exporter only emits body-covered instructions).
+// 8192 covers the largest observed bodies (~4.3KB); the next-entry clamp
+// still prevents crossing known boundaries, and extension only follows
+// actually-decoded instructions.
+static constexpr uint64_t kBodyFinalizerMaxScan = 8192;
 
 FunctionBodyFinalizer::FunctionBodyFinalizer()
     : AbstractAnalyzer(
@@ -162,6 +169,11 @@ bool FunctionBodyFinalizer::added(Program* program, const AddressSetView& set,
 
         SourceType src = func->getSource();
         std::string name = func->getName();
+        // Preserve attributes across remove/recreate (analysis passes such
+        // as import-thunk detection key off them; losing isThunk here made
+        // PLT stubs take import prototypes meant for externals).
+        bool wasThunk = func->isThunk();
+        bool wasExternal = func->isExternal();
 
         if (!funcMgr->removeFunction(func->getEntryPoint())) {
             removedFail++;
@@ -169,7 +181,11 @@ bool FunctionBodyFinalizer::added(Program* program, const AddressSetView& set,
         }
 
         try {
-            funcMgr->createFunction(name, entryAddr, newBody, src);
+            Function* recreated = funcMgr->createFunction(name, entryAddr, newBody, src);
+            if (recreated) {
+                recreated->setThunk(wasThunk);
+                recreated->setExternal(wasExternal);
+            }
             extended++;
         } catch (const std::exception& e) {
             recreateFail++;

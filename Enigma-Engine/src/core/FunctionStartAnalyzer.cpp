@@ -16,6 +16,8 @@
 #include <ghidra/Msg.h>
 #include <ghidra/Disassembler.h>
 #include <ghidra/AutoNaming.h>
+#include <ghidra/ReferenceManager.h>
+#include <ghidra/RefType.h>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -141,6 +143,26 @@ static std::vector<std::vector<uint8_t>> getProloguePatterns(const std::string& 
         // PUSH R12..R15 — rare multi-register push frame (COM vtables)
         patterns.push_back({0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57}); // push r12; push r13; push r14; push r15
 
+        // REX push pairs — System V callee-saved frame setup. The full
+        // r12-r15 pattern above misses functions that push only a pair
+        // (large_x86_64.elf: 130 Ghidra functions start this way, most with
+        // no direct references, so no other discovery pass proposes them).
+        // Candidates still pass isValidFunctionStartCandidate, which rejects
+        // fallthrough interiors.
+        patterns.push_back({0x41, 0x57, 0x41, 0x56}); // push r15; push r14
+        patterns.push_back({0x41, 0x55, 0x41, 0x54}); // push r13; push r12
+        patterns.push_back({0x41, 0x56, 0x41, 0x55}); // push r14; push r13
+        patterns.push_back({0x41, 0x54, 0x55});       // push r12; push rbp
+        patterns.push_back({0x41, 0x56, 0x49, 0x89, 0xFE}); // push r14; mov r14,rdi
+        patterns.push_back({0x41, 0x54, 0x49, 0x89, 0xFC}); // push r12; mov r12,rdi
+        patterns.push_back({0x41, 0x54, 0x49, 0x89, 0xD4}); // push r12; mov r12,rdx
+
+        // PUSH RBX/RBP frames with register shuffle prologues
+        patterns.push_back({0x53, 0x48, 0x89, 0xFB}); // push rbx; mov rdi,rbx
+        patterns.push_back({0x55, 0x48, 0x89, 0xFD}); // push rbp; mov rbp,rdi
+        patterns.push_back({0x55, 0x53});             // push rbp; push rbx
+        patterns.push_back({0x53, 0x48, 0x83, 0xEC}); // push rbx; sub rsp,imm8
+
         // XOR R10, R10 / JMP — syscall trampoline stubs
         patterns.push_back({0x4D, 0x31, 0xD2, 0xE9});                     // xor r10,r10; jmp rel32
 
@@ -150,6 +172,18 @@ static std::vector<std::vector<uint8_t>> getProloguePatterns(const std::string& 
         patterns.push_back({0x10, 0xB5});
         patterns.push_back({0x2D, 0xE9});
         patterns.push_back({0x00, 0x48});  // ldr r0, [pc, #0]
+        // AArch64 starts (shares the "ARM" bucket): BTI/PAC landing pads
+        // are compiler-emitted function entries, and sub-sp stack allocation
+        // opens most frame functions. Exact sub-sp forms observed in
+        // aarch64_pie_dyn.elf; each still passes isValidFunctionStartCandidate.
+        patterns.push_back({0x9F, 0x24, 0x03, 0xD5}); // bti j
+        patterns.push_back({0x5F, 0x24, 0x03, 0xD5}); // bti c
+        patterns.push_back({0x3F, 0x23, 0x03, 0xD5}); // paciasp
+        patterns.push_back({0xFF, 0x43, 0x01, 0xD1}); // sub sp,sp,#0x50
+        patterns.push_back({0xFF, 0xC3, 0x00, 0xD1}); // sub sp,sp,#0x30
+        patterns.push_back({0xFF, 0x83, 0x04, 0xD1}); // sub sp,sp,#0x120
+        patterns.push_back({0xFD, 0x7B});             // stp x29,x30 (any offset)
+        patterns.push_back({0xF0, 0x7B, 0xBF, 0xA9}); // stp x16,x30,[sp,#-16]! (PLT0 resolver)
     } else if (arch == "MIPS") {
         patterns.push_back({0x27, 0xBD});  // addiu sp, sp, ...
         patterns.push_back({0x3C, 0x1C});  // lui gp, ...
@@ -186,9 +220,11 @@ static bool languageIsBigEndian(const std::string& langId) {
 // (int3, nop, ud2, jmp, ret, call) that end at addr do NOT disqualify it.
 //
 // Disassembler is passed in (cached) to avoid creating a new instance per call.
-static bool isValidFunctionStartCandidate(Program* program, const Address& addr,
-                                          const std::string& arch, int bitness,
-                                          Disassembler* disassembler) {
+// Shared via the header: other analyzers that create functions from raw
+// jump targets apply the same rule instead of splitting bodies.
+bool isValidFunctionStartCandidate(Program* program, const Address& addr,
+                                   const std::string& arch, int bitness,
+                                   Disassembler* disassembler) {
     Memory* memory = program->getMemory();
     FunctionManager* funcMgr = program->getFunctionManager();
     if (!memory || !funcMgr) return false;
@@ -198,7 +234,7 @@ static bool isValidFunctionStartCandidate(Program* program, const Address& addr,
 
     // Determine max instruction length for this architecture
     int maxInstrLen = 15;
-    if (arch == "ARM") maxInstrLen = 4;
+    if (arch == "ARM" || arch == "aarch64" || arch == "arm64") maxInstrLen = 4;
     else if (arch == "MIPS" || arch == "PowerPC") maxInstrLen = 4;
 
     if (!disassembler) return true; // cannot validate, be permissive
@@ -215,9 +251,26 @@ static bool isValidFunctionStartCandidate(Program* program, const Address& addr,
                 // Found a valid instruction ending at addr.
                 // If it is a normal fallthrough instruction (not padding/terminator),
                 // this candidate is an interior match, not a function start.
+                // Terminator set covers x86 (jmp/ret/call), ARM/AArch64
+                // (b/bl/br/blr/bx/ret), MIPS (j/jal/jalr/jr) and PPC
+                // (b/bl/blr/bctr). Only UNCONDITIONAL transfers are listed:
+                // conditional branches (cbz/je/...) fall through, so an
+                // address after one is genuinely reachable and must stay
+                // rejected. (AArch64 BTI/PAC landing pads are still proposed
+                // by the pattern list; this only governs the backstop.)
                 const std::string& mnem = di.mnemonic;
-                if (mnem != "int3" && mnem != "nop" && mnem != "ud2" &&
-                    mnem != "jmp" && mnem != "ret" && mnem != "retn" && mnem != "call") {
+                static const char* kTerminators[] = {
+                    "int3", "nop", "ud2",
+                    "jmp", "ret", "retn", "call",
+                    "b", "bl", "br", "blr", "bx",
+                    "j", "jal", "jalr", "jr",
+                    "bctr",
+                };
+                bool isTerminator = false;
+                for (const char* t : kTerminators) {
+                    if (mnem == t) { isTerminator = true; break; }
+                }
+                if (!isTerminator) {
                     return false;
                 }
                 // Padding/terminator: keep looking for a longer real instruction
@@ -258,6 +311,25 @@ static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerP
     // Cache disassembler for all isValidFunctionStartCandidate calls in this pass
     auto disassembler = createDisassembler(arch, bitness, languageIsBigEndian(lidStr));
 
+    // AArch64 has no compressed mode: every instruction is 4-aligned. Short
+    // patterns (e.g. 2-byte Thumb/LSB pairs) otherwise match at misaligned
+    // offsets inside 4-byte instructions and carve bogus entries (pie:
+    // func_0x12ab inside an adrp). 32-bit ARM keeps 2-alignment for Thumb.
+    bool requireWordAlign = (lidStr.find("AARCH64") != std::string::npos);
+
+    // Landing-pad starts (BTI/PAC) are hardware-enforced function entries:
+    // the compiler never emits them mid-function. They stay eligible even
+    // when already decoded (e.g. reached as an unconditional-jump target
+    // before this scan runs), provided a flow reference targets them —
+    // mere fallthrough into one is not an entry.
+    static const std::vector<std::vector<uint8_t>> kLandingPads = {
+        {0x9F, 0x24, 0x03, 0xD5}, // bti j
+        {0x5F, 0x24, 0x03, 0xD5}, // bti c
+        {0x3F, 0x23, 0x03, 0xD5}, // paciasp
+    };
+    bool checkLandingPads = requireWordAlign;
+    ReferenceManager* refMgr = program->getReferenceManager();
+
     int found = 0;
     auto blocks = memory->getBlocks();
     for (auto* block : blocks) {
@@ -274,7 +346,33 @@ static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerP
         bytesExamined += size;
         for (uint64_t off = 0; off < size && found < maxPerPass && !monitor->isCancelled(); ++off) {
             Address addr(start.getAddressSpace(), start.getOffset() + static_cast<int64_t>(off));
-            if (!listing->isUndefined(addr)) continue;
+            bool defined = !listing->isUndefined(addr);
+            bool strongHit = false;
+            if (checkLandingPads && !isInFunctionRanges(funcRanges, static_cast<uint64_t>(addr.getOffset()))) {
+                int remaining = static_cast<int>(size - off);
+                for (const auto& lp : kLandingPads) {
+                    if (static_cast<int>(lp.size()) > remaining) continue;
+                    if (std::memcmp(buf.data() + off, lp.data(), lp.size()) == 0) {
+                        strongHit = true;
+                        break;
+                    }
+                }
+            }
+            if (defined && !strongHit) continue;
+            if (defined && strongHit) {
+                // Decoded landing pad: only a real entry when directly
+                // transferred to (unconditional/call target), not when merely
+                // fallen through to.
+                bool hasFlow = false;
+                if (refMgr) {
+                    for (Reference* ref : refMgr->getReferencesTo(addr)) {
+                        const RefType* rt = ref ? ref->getReferenceType() : nullptr;
+                        if (rt && rt->isFlow()) { hasFlow = true; break; }
+                    }
+                }
+                if (!hasFlow) continue;
+            }
+            if (requireWordAlign && (static_cast<uint64_t>(addr.getOffset()) & 3u) != 0) continue;
             if (isInFunctionRanges(funcRanges, static_cast<uint64_t>(addr.getOffset()))) continue;
             if (!firstByteCheck[buf[off]]) continue;
             int remaining = static_cast<int>(size - off);

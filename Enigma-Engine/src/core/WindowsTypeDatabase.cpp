@@ -546,6 +546,15 @@ const std::unordered_set<std::string>& getNoReturnTable() {
         "ExitProcess", "TerminateProcess", "abort", "exit", "_exit",
         "quick_exit", "FatalExit", "FatalAppExit", "longjmp",
         "RaiseException", "ExitThread", "FreeLibraryAndExitThread",
+        // Compiler-runtime termination paths. These names occur on ELF
+        // (MinGW/CRT-linked binaries can import them on PE too); none of
+        // these functions ever return on any platform, so listing them here
+        // is correct wherever this DB is consulted (decompiler audit: a
+        // missing __stack_chk_fail merged four init fragments into one
+        // function because flow continued past its call).
+        "_Exit", "exit_group", "siglongjmp", "__stack_chk_fail",
+        "__assert_fail", "__chk_fail", "__fortify_fail", "pthread_exit",
+        "__cxa_throw", "_Unwind_Resume",
     };
     return noReturn;
 }

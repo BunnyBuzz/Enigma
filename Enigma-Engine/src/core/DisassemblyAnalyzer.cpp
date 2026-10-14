@@ -5,6 +5,7 @@
 #include <ghidra/Memory.h>
 #include <ghidra/MemoryBlock.h>
 #include <ghidra/Disassembler.h>
+#include <ghidra/FunctionStartAnalyzer.h>
 #include <ghidra/AddressSet.h>
 #include <ghidra/AddressSpace.h>
 #include <ghidra/FunctionManager.h>
@@ -30,7 +31,9 @@ DisassemblyAnalyzer::DisassemblyAnalyzer()
 
 static bool parseHexOperand(const std::string& op, uint64_t& out) {
     std::string s = op;
-    while (!s.empty() && (s[0] == ' ' || s[0] == '\t')) s.erase(s.begin());
+    // ARM/AArch64 render immediates with a '#' prefix (b #0xc8c, bl #0x..,
+    // cbz x0, #0x..); strip it before parsing.
+    while (!s.empty() && (s[0] == ' ' || s[0] == '\t' || s[0] == '#')) s.erase(s.begin());
     if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
         s = s.substr(2);
     } else {
@@ -242,7 +245,6 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
             if (got <= 0) break;
 
             std::vector<uint8_t> bytes(readBuf.begin(), readBuf.begin() + got);
-
             // GP-6766: drive the Capstone ISA mode from the STO_MIPS16
             // ranges the loader recorded, so compressed bytes decode as
             // 2-byte instructions. NOTE: mode 1 selects microMIPS tables
@@ -351,7 +353,13 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
             if (ft->isCall() && !ft->isComputed()) {
                 if (!di.operands.empty()) {
                     uint64_t target = 0;
-                    if (parseHexOperand(di.operands[0], target) && target != 0) {
+                    // Conditional-branch-style multi-operand forms (cbz x0,
+                    // #addr) carry the target last; single-operand forms first.
+                    if ((!parseHexOperand(di.operands[0], target) || target == 0) &&
+                        di.operands.size() > 1) {
+                        parseHexOperand(di.operands.back(), target);
+                    }
+                    if (target != 0) {
                         Address targetAddr(codeSpace, static_cast<int64_t>(target));
                         inst->addOperandReference(0, targetAddr, &RefTypes::UNCONDITIONAL_CALL,
                                                   SourceType::ANALYSIS);
@@ -365,8 +373,17 @@ bool DisassemblyAnalyzer::added(Program* program, const AddressSetView& set,
             }
             // --- DIRECT JUMP ---
             else if (ft->isJump() && !ft->isComputed()) {
+                // Target is the first operand, except multi-operand forms
+                // (cbz x0, #addr) where it comes last.
                 uint64_t target = 0;
-                if (!di.operands.empty() && parseHexOperand(di.operands[0], target) && target != 0) {
+                bool haveTarget = false;
+                if (!di.operands.empty()) {
+                    haveTarget = parseHexOperand(di.operands[0], target) && target != 0;
+                    if (!haveTarget && di.operands.size() > 1) {
+                        haveTarget = parseHexOperand(di.operands.back(), target) && target != 0;
+                    }
+                }
+                if (haveTarget) {
                     Address targetAddr(codeSpace, static_cast<int64_t>(target));
                     auto refType = ft->isConditional() ? &RefTypes::CONDITIONAL_JUMP : &RefTypes::UNCONDITIONAL_JUMP;
                     inst->addOperandReference(0, targetAddr, refType, SourceType::ANALYSIS);

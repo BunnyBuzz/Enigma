@@ -722,18 +722,12 @@ public:
             program->setImageBase(baseAddr);
 
             if (funcMgr && !funcMgr->getFunctionAt(entryAddr)) {
-                uint64_t bodyEnd = entryPoint_;
-                if (const SectionInfo* entrySection = findSectionContaining(entryPoint_)) {
-                    uint64_t span = getSectionSpan(*entrySection);
-                    if (span > 0) {
-                        uint64_t sectionEnd = entrySection->virtualAddress + span - 1;
-                        bodyEnd = std::min(sectionEnd, entryPoint_ + 63);
-                    }
-                }
-                if (bodyEnd < entryPoint_) {
-                    bodyEnd = entryPoint_;
-                }
-                AddressSet body(entryAddr, Address(ramSpace, static_cast<int64_t>(bodyEnd)));
+                // Initial body is a single byte: real extents are assigned by
+                // discovery + FunctionBodyFinalizer. A wider guess (e.g. +64)
+                // permanently suppresses nearby functions — getFunctionContaining
+                // and the pattern scan both treat the range as taken
+                // (aarch64_pie: entry+64 swallowed the real function at +20).
+                AddressSet body(entryAddr, entryAddr);
                 try {
                     funcMgr->createFunction("entry", entryAddr, body, SourceType::ANALYSIS);
                 } catch (const std::exception&) {

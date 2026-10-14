@@ -14,8 +14,13 @@ public:
     }
 
     bool isNoReturn(const std::string& funcName) const override {
+        // Libc termination paths; mirrors Ghidra's NoReturn DB (see Linux DB).
         return funcName == "abort" || funcName == "exit" || funcName == "_exit" ||
-               funcName == "quick_exit" || funcName == "longjmp";
+               funcName == "_Exit" || funcName == "exit_group" ||
+               funcName == "quick_exit" || funcName == "longjmp" ||
+               funcName == "siglongjmp" || funcName == "__stack_chk_fail" ||
+               funcName == "__assert_fail" || funcName == "__assert_rtn" ||
+               funcName == "pthread_exit";
     }
 
     std::string getPlatformName() const override {
