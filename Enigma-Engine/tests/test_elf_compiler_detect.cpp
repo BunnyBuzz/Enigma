@@ -251,8 +251,10 @@ int main() {
         bool ok = loadAndPopulate(path, loader.get(), prog);
         TEST("Plain ELF loaded", ok);
         TEST("Compiler not set", ok && prog.prog.getCompiler().empty());
-        TEST("Compiler spec stays arch-guessed", ok &&
-             prog.prog.getCompilerSpecID().toString() == "windows");
+        // Ghidra pairs x86-64 ELF with the GCC compiler spec (SysV ABI:
+        // RDI/RSI/RDX), not the Windows spec.
+        TEST("Compiler spec is gcc for x86 ELF", ok &&
+             prog.prog.getCompilerSpecID().toString() == "gcc");
     }
 
     {

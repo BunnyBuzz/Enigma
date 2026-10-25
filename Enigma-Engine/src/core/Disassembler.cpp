@@ -188,8 +188,10 @@ FlowType* Disassembler::determineFlowType(const std::string& mnemonic, const std
         mnemonic == "jalr" || mnemonic == "blr" || mnemonic == "jalx") {
         return const_cast<FlowType*>(&RefTypes::UNCONDITIONAL_CALL);
     }
+    // SYSCALL/SVC are kernel-entry calls: Ghidra's x86 and AArch64 specs model
+    // them as userops with normal fall-through, so the instruction after them
+    // is part of the function (e.g. glibc wrappers test the return value).
     if (mnemonic == "ret" || mnemonic == "bx" || mnemonic == "eret" ||
-        mnemonic == "syscall" || mnemonic == "svc" ||
         (mnemonic == "pop" && !operands.empty() && operands[0] == "pc")) {
         return const_cast<FlowType*>(&RefTypes::TERMINATOR);
     }

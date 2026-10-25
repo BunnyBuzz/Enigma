@@ -19,91 +19,81 @@ void __stdcall _start()
 
 void __stdcall 00000000.plt_pic32.fib()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10010))();
+    (*ptr_0x48598)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.prctl()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10014))();
+    (*ptr_0x4859c)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.syscall()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10018))();
+    (*ptr_0x485a0)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.ptrace()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x1001c))();
+    (*ptr_0x485a4)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.scanf()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10020))();
+    (*ptr_0x485a8)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.malloc()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10024))();
+    (*ptr_0x485ac)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.free()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10028))();
+    (*ptr_0x485b0)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.setvbuf()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x1002c))();
+    (*ptr_0x485b4)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.write()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10030))();
+    (*ptr_0x485b8)();
     return;
 }
 
 void __stdcall 00000000.plt_pic32.getenv()
 {
-    int32_t unaff_r30;
                     
                     
-    (**(code **)(unaff_r30 + 0x10034))();
+    (*ptr_0x485bc)();
     return;
 }
 

@@ -470,6 +470,15 @@ int main() {
         TEST("aarch64 stripped imports non-empty", !si.empty());
         TEST("aarch64 stripped == original addressed imports",
              importSetAddressed(lo.get()) == importSetAddressed(ls.get()));
+
+        // .rela.dyn's R_AARCH64_RELATIVE at .init_array[0] points at 0xd78;
+        // Ghidra names that target _INIT_0.
+        bool initFound = false;
+        for (const auto& s : lo->getSymbols()) {
+            if (s.name == "_INIT_0" && s.address == 0xd78 && s.isFunction)
+                initFound = true;
+        }
+        TEST("aarch64 .init_array names _INIT_0", initFound);
     }
 
     std::remove(p64.c_str());

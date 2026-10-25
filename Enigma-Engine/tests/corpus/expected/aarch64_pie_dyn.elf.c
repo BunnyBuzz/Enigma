@@ -1,23 +1,6 @@
 void __cdecl entry()
 {
-    code *UNRECOVERED_JUMPTABLE;
-    UNRECOVERED_JUMPTABLE = (code *)__libc_init();
-    if (UNRECOVERED_JUMPTABLE != (code *)0x0) {
-                    
-                    
-        (*UNRECOVERED_JUMPTABLE)();
-        return;
-    }
-    return;
-}
-
-
-
-void __cdecl __libc_init()
-{
-                    
-                    
-    (*___libc_init)();
+    func_0xc8c();
     return;
 }
 
@@ -49,6 +32,16 @@ void __cdecl func_0xc8c(uint64_t param_1)
     return;
 }
 
+
+
+void __cdecl __libc_init()
+{
+                    
+                    
+    (*___libc_init)();
+    return;
+}
+
 void __cdecl func_0xce4(code *UNRECOVERED_JUMPTABLE)
 {
     if (UNRECOVERED_JUMPTABLE != (code *)0x0) {
@@ -60,23 +53,15 @@ void __cdecl func_0xce4(code *UNRECOVERED_JUMPTABLE)
     return;
 }
 
-
-
 void __cdecl func_0xcf8(uint64_t param_1)
 {
-                    
-                    
-    (*___cxa_atexit)(0xce4,param_1,0x9828);
+    __cxa_atexit(0xce4,param_1,0x9828);
     return;
 }
 
-
-
 void __cdecl func_0xd14()
 {
-                    
-                    
-    (*___register_atfork)();
+    __register_atfork();
     return;
 }
 
@@ -97,7 +82,7 @@ void __cdecl func_0xd24()
     return;
 }
 
-void __cdecl func_0xd78()
+void __cdecl _INIT_0()
 {
     int64_t v_1;
     int64_t v_2;

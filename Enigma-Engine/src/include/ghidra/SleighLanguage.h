@@ -100,6 +100,8 @@ private:
 
     void buildX86Registers();
     void buildARMRegisters();
+    void buildMipsRegisters();
+    void buildPowerPCRegisters();
 
     SleighLanguageDescription* description = nullptr;
     AddressFactory* addressFactory = nullptr;

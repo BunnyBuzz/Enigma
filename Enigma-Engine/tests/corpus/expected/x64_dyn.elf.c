@@ -1,26 +1,33 @@
 
 
-void __fastcall _start(char *param_1, char *param_2, int32_t param_3, uint64_t param_4)
+void __stdcall
+_start(uint64_t param_1, char *param_2, uint64_t param_3, uint64_t param_4)
 {
-    fib();
-    prctl();
-    syscall();
+    uint32_t v_1;
+    int32_t out_edx;
+    char *v_2;
+    void *v_3;
+    v_1 = fib(10);
+    prctl(v_1);
+    syscall(v_1);
+    v_2 = (char *)(uint64_t)v_1;
     ptrace();
-    scanf(param_1);
-    malloc((uint64_t)param_1);
-    free(param_1);
-    setvbuf(param_1,param_2,param_3,param_4);
+    scanf(v_2);
+    malloc((uint64_t)v_1);
+    v_3 = (void *)(uint64_t)v_1;
+    free(v_3);
+    setvbuf(v_3,param_2,out_edx,param_4);
     write();
     getenv();
                     
                     
-    (*_prctl)();
+    (*_prctl)(v_1 + *_g_data);
     return;
 }
 
 
 
-void __fastcall fib()
+void __stdcall fib()
 {
                     
                     
@@ -30,7 +37,7 @@ void __fastcall fib()
 
 
 
-void __fastcall prctl()
+void __stdcall prctl()
 {
                     
                     
@@ -40,7 +47,7 @@ void __fastcall prctl()
 
 
 
-void __fastcall syscall()
+void __stdcall syscall()
 {
                     
                     
@@ -50,7 +57,7 @@ void __fastcall syscall()
 
 
 
-void __fastcall ptrace()
+void __stdcall ptrace()
 {
                     
                     
@@ -60,7 +67,7 @@ void __fastcall ptrace()
 
 
 
-int32_t __fastcall scanf(char *param_1,...)
+int32_t __stdcall scanf(char *param_1,...)
 {
     int32_t v_1;
                     
@@ -71,7 +78,7 @@ int32_t __fastcall scanf(char *param_1,...)
 
 
 
-void * __fastcall malloc(uint64_t param_1)
+void * __stdcall malloc(uint64_t param_1)
 {
     void *v_1;
                     
@@ -82,7 +89,7 @@ void * __fastcall malloc(uint64_t param_1)
 
 
 
-void __fastcall free(void *param_1)
+void __stdcall free(void *param_1)
 {
                     
                     
@@ -92,7 +99,7 @@ void __fastcall free(void *param_1)
 
 
 
-int32_t __fastcall
+int32_t __stdcall
 setvbuf(void *param_1, char *param_2, int32_t param_3, uint64_t param_4)
 {
     int32_t v_1;
@@ -104,7 +111,7 @@ setvbuf(void *param_1, char *param_2, int32_t param_3, uint64_t param_4)
 
 
 
-void __fastcall write()
+void __stdcall write()
 {
                     
                     
@@ -114,7 +121,7 @@ void __fastcall write()
 
 
 
-void __fastcall getenv()
+void __stdcall getenv()
 {
                     
                     
@@ -122,20 +129,19 @@ void __fastcall getenv()
     return;
 }
 
-int32_t __fastcall fib()
+int32_t __stdcall fib(int32_t param_1)
 {
     int32_t v_1;
     int32_t v_2;
-    int32_t unaff_EDI;
     v_2 = 0;
-    for (; 1 < unaff_EDI; unaff_EDI += -2) {
-        v_1 = fib();
+    for (; 1 < param_1; param_1 += -2) {
+        v_1 = fib(param_1 + -1);
         v_2 += v_1;
     }
-    return unaff_EDI + v_2;
+    return param_1 + v_2;
 }
 
-void __fastcall func_0x1550()
+void __stdcall func_0x1550()
 {
                     
                     

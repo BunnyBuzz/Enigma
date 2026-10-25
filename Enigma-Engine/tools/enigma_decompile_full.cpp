@@ -41,6 +41,9 @@
 #include <ghidra/TypeDatabase.h>
 #include <ghidra/FunctionDiscoveryAnalyzer.h>
 #include <ghidra/FunctionManager.h>
+#include <ghidra/SleighLanguageProvider.h>
+#include <ghidra/Language.h>
+#include <ghidra/LanguageID.h>
 
 using namespace ghidra_decompiler;
 
@@ -607,11 +610,19 @@ int main(int argc, char** argv) {
             std::string guessed = ghidra::BinaryLoader::guessLanguageFromArch(
                 bloader->getArchitecture(), bloader->getBitness(), bloader->isBigEndian());
             if (guessed != "unknown") {
-                // Use correct compiler spec
-                std::string compiler = bloader->getFormatName() == "Mac OS X Mach-O"
-                    ? "default"
-                    : ghidra::BinaryLoader::guessCompilerSpecFromArch(
+                // Use correct compiler spec. ELF uses the GCC specification in
+                // Ghidra; the x86 processor guess alone is the Windows spec
+                // (__fastcall with RCX/RDX argument registers).
+                std::string formatName = bloader->getFormatName();
+                std::string compiler;
+                if (formatName == "ELF") {
+                    compiler = "gcc";
+                } else if (formatName == "Mac OS X Mach-O") {
+                    compiler = "default";
+                } else {
+                    compiler = ghidra::BinaryLoader::guessCompilerSpecFromArch(
                         bloader->getArchitecture(), bloader->getBitness());
+                }
                 // Append compiler part (5th colon-separated component)
                 if (compiler != "default")
                     guessed = guessed + ":" + compiler;
@@ -712,7 +723,38 @@ int main(int argc, char** argv) {
                 addrFactory->setStackSpace(ramSpace);
             }
 
+            // Attach the SLEIGH language so architecture analyzers can see the
+            // processor and registers. Analyzers like MipsAddressAnalyzer need
+            // $t9/$gp/$ra, and their canAnalyze() gates on getProcessor().
+            // ProgramDB keeps its own ProgramAddressFactory, so the manual
+            // spaces above are unaffected; only Program::language_ is used.
+            try {
+                auto* analysisLang = ghidra::SleighLanguageProvider::
+                    getSleighLanguageProvider().getLanguage(
+                        ghidra::LanguageID(langId), nullptr);
+                if (analysisLang) analysisProgram->setLanguage(analysisLang);
+            } catch (const std::exception& e) {
+                if (std::getenv("ENIGMA_DEBUG"))
+                    std::cerr << "Language attach failed (" << langId
+                              << "): " << e.what() << "\n";
+            }
+
             if (bloader->populateProgram(analysisProgram.get())) {
+                // populateProgram can refine the ELF compiler spec (Swift/Go
+                // detection). Keep the standalone decompiler target in
+                // lockstep with the ProgramDB so both use the same calling
+                // convention model.
+                if (!userSetLang && bloader->getFormatName() == "ELF") {
+                    std::string specId =
+                        analysisProgram->getCompilerSpecID().getIdAsString();
+                    if (!specId.empty()) {
+                        if (std::count(langId.begin(), langId.end(), ':') == 4) {
+                            langId.erase(langId.rfind(':'));
+                        }
+                        if (specId != "default") langId += ":" + specId;
+                    }
+                }
+
                 // FunctionDiscovery pre-pass (mirrors enigma_dump_functions):
                 // seed loader-named functions (symbols, and import-named PLT
                 // stubs) before analysis so later passes extend them instead
@@ -819,6 +861,7 @@ int main(int argc, char** argv) {
             if (typeDB) bridge.setTypeDatabase(typeDB.get());
 
             bridge.bridgeFunctions();
+            bridge.bridgeFlowOverrides();
             if (!noTypeBridge) bridge.bridgeTypes();
             try {
                 bridge.bridgeImportSignatures();

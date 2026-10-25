@@ -19,6 +19,7 @@
 #include <ghidra/ReferenceManager.h>
 #include <ghidra/RefType.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -284,6 +285,81 @@ bool isValidFunctionStartCandidate(Program* program, const Address& addr,
     return true;
 }
 
+// Multi-byte push-frame prologue: a saved-register push (optionally REX
+// prefixed) opens almost every non-leaf x86-64 frame. These are the strongest
+// function-start hints available without symbols.
+static bool isStrongPushPrologue(const std::vector<uint8_t>& pattern) {
+    if (pattern.size() < 2) return false;
+    if (pattern[0] == 0x41 || pattern[0] == 0x40) {
+        return pattern[1] >= 0x53 && pattern[1] <= 0x57;
+    }
+    return pattern[0] == 0x53 || pattern[0] == 0x55 ||
+           pattern[0] == 0x56 || pattern[0] == 0x57;
+}
+
+// True when the canonical linear decode from `entryOffset` lands exactly on
+// `candidate` and the instruction immediately before it is an unconditional
+// transfer: CALL, JMP, or RET.
+//
+// The validator rejects a strong push-frame candidate when a shorter byte window
+// decodes as a normal instruction -- typically the displacement bytes of the
+// real preceding `jmp rel32` decoding as `add`. Ghidra still splits after such
+// a transfer (large_x86_64.elf 0x4948e8 after JMP, 0x494af5 after CALL), and
+// after a RET it starts the next function in cold code (0x40a567, 0x422b8d).
+// Conditional branches and fallthrough never start a function: at 0x4586ca and
+// 0x497bb8 the candidate is a conditional-branch target and Ghidra folds it
+// into the parent; FunctionBodyFinalizer drops those entries once flow
+// references exist. Scanning backward for any byte window that decodes as a
+// transfer is too permissive: at 0x48ede7 the window `e9 52 4c 89 e2` starts
+// inside `mov rdx,r12` and decodes as a fake JMP. Decoding forward from the
+// nearest known entry only accepts instruction boundaries the canonical stream
+// actually produces.
+static bool followsCanonicalTransfer(Memory* memory, Disassembler* disassembler,
+                                     const Address& candidate, uint64_t entryOffset,
+                                     int maxInstrLen) {
+    if (!memory || !disassembler) return false;
+    const uint64_t candOff = static_cast<uint64_t>(candidate.getOffset());
+    if (entryOffset >= candOff) return false;
+    Address entry(candidate.getAddressSpace(), static_cast<int64_t>(entryOffset));
+    MemoryBlock* block = memory->getBlock(entry);
+    if (!block || block != memory->getBlock(candidate)) return false;
+    const uint64_t blockEnd = static_cast<uint64_t>(block->getEnd().getOffset());
+
+    Address cur = entry;
+    std::string prevMnemonic;
+    // Bound the walk: a candidate thousands of instructions past the nearest
+    // entry is separated by data or padding, not a straight-line function.
+    for (int steps = 0; steps < 8192; ++steps) {
+        const uint64_t curOff = static_cast<uint64_t>(cur.getOffset());
+        if (curOff == candOff) {
+            std::transform(prevMnemonic.begin(), prevMnemonic.end(),
+                           prevMnemonic.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return prevMnemonic == "call" || prevMnemonic == "jmp" ||
+                   prevMnemonic == "ret" || prevMnemonic == "retn";
+        }
+        if (curOff > candOff || curOff > blockEnd) return false;
+        uint64_t avail = blockEnd - curOff + 1;
+        if (avail > static_cast<uint64_t>(maxInstrLen)) {
+            avail = static_cast<uint64_t>(maxInstrLen);
+        }
+        std::vector<uint8_t> bytes(static_cast<size_t>(avail));
+        int got = 0;
+        try {
+            got = memory->getBytes(cur, bytes.data(), static_cast<int>(avail));
+        } catch (...) {
+            return false;
+        }
+        if (got < 1) return false;
+        bytes.resize(static_cast<size_t>(got));
+        auto di = disassembler->disassembleOne(bytes, curOff);
+        if (di.length <= 0) return false;
+        prevMnemonic = di.mnemonic;
+        cur = cur.add(di.length);
+    }
+    return false;
+}
+
 static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerPass,
                               std::vector<Address>& createdCandidates,
                               uint64_t& bytesExamined) {
@@ -307,6 +383,20 @@ static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerP
 
     // Precompute function ranges for fast O(log N) membership checks
     auto funcRanges = buildFunctionRanges(funcMgr);
+
+    // Entries known when this pass begins, plus every pattern start accepted
+    // below. The push-frame fallback decodes forward from the closest
+    // preceding entry, so later candidates anchor on newly created splits.
+    std::set<Address> knownEntries;
+    {
+        FunctionIterator fit = funcMgr->getFunctions(true);
+        while (fit.hasNext()) {
+            Function* func = fit.next();
+            if (!func || func->isExternal()) continue;
+            Address entry = func->getEntryPoint();
+            if (entry.isValid()) knownEntries.insert(entry);
+        }
+    }
 
     // Cache disassembler for all isValidFunctionStartCandidate calls in this pass
     auto disassembler = createDisassembler(arch, bitness, languageIsBigEndian(lidStr));
@@ -404,8 +494,21 @@ static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerP
                 // instructions. The validator already accepts real padding and
                 // terminator predecessors (int3/nop/ud2/jmp/ret/call), so using
                 // it alone keeps recall while rejecting fallthrough interiors.
-                if (!isValidFunctionStartCandidate(program, addr, arch, bitness,
-                                                   disassembler.get())) {
+                bool validStart = isValidFunctionStartCandidate(
+                    program, addr, arch, bitness, disassembler.get());
+                if (!validStart && bitness == 64 && isStrongPushPrologue(pattern)) {
+                    auto prev = knownEntries.upper_bound(addr);
+                    if (prev != knownEntries.begin()) {
+                        --prev;
+                        if (prev->getAddressSpace() == addr.getAddressSpace() &&
+                            followsCanonicalTransfer(
+                                memory, disassembler.get(), addr,
+                                static_cast<uint64_t>(prev->getOffset()), 15)) {
+                            validStart = true;
+                        }
+                    }
+                }
+                if (!validStart) {
                     continue;
                 }
                 try {
@@ -414,6 +517,7 @@ static int findPatternStarts(Program* program, TaskMonitor* monitor, int maxPerP
                     funcName << AutoNaming::nameVal("func", static_cast<uint64_t>(addr.getOffset()));
                     funcMgr->createFunction(funcName.str(),
                                             addr, body, SourceType::ANALYSIS);
+                    knownEntries.insert(addr);
                     createdCandidates.push_back(addr);
                     ++found;
                 } catch (const std::exception&) {
@@ -494,6 +598,257 @@ static int findCallDestinations(Program* program, TaskMonitor* monitor, int maxP
                 ++found;
             } catch (const std::exception&) {
             }
+        }
+    }
+    return found;
+}
+
+// Canonical x86 epilogue fragments: a RET, optionally preceded by the one
+// instruction compilers emit to set a return value or restore a register.
+// Ghidra folds these bytes into the preceding function, so a JMP that lands
+// just past one is still an intra-function branch (large_x86_64.elf:
+// `jmp 0x4004c3` past `xor eax,eax; ret` at 0x4004c0, and `jmp 0x400b16`
+// past the same stub at 0x400b08).
+static bool beginsTrivialEpilogue(Memory* memory, const Address& entry) {
+    uint8_t b[4] = {0, 0, 0, 0};
+    int got = 0;
+    try {
+        got = memory->getBytes(entry, b, 4);
+    } catch (...) {
+        return false;
+    }
+    if (got < 1) return false;
+    auto isPop = [](uint8_t op) { return op >= 0x58 && op <= 0x5F; };
+    if (b[0] == 0xC3) return true;                     // RET
+    if (b[0] == 0xC2) return got >= 3;                 // RET imm16
+    if (got < 2) return false;
+    if (b[0] == 0x90 && b[1] == 0xC3) return true;     // NOP; RET
+    if (b[0] == 0xC9 && b[1] == 0xC3) return true;     // LEAVE; RET
+    if (isPop(b[0]) && b[1] == 0xC3) return true;      // POP r64; RET
+    if (got < 3) return false;
+    if (b[0] == 0x31 && b[1] == 0xC0 && b[2] == 0xC3) return true; // XOR EAX,EAX; RET
+    if (b[0] == 0x33 && b[1] == 0xC0 && b[2] == 0xC3) return true; // XOR EAX,EAX; RET
+    if (b[0] == 0x41 && isPop(b[1]) && b[2] == 0xC3) return true;  // POP R8-R15; RET
+    if (b[0] == 0x66 && b[1] == 0x90 && b[2] == 0xC3) return true; // NOP(2); RET
+    if (got < 4) return false;
+    if (b[0] == 0x48 && b[1] == 0x31 && b[2] == 0xC0 && b[3] == 0xC3) return true; // XOR RAX,RAX; RET
+    if (b[0] == 0x83 && b[1] == 0xC8 && b[2] == 0xFF && b[3] == 0xC3) return true; // OR EAX,-1; RET
+    if (b[0] == 0x0F && b[1] == 0x1F && b[2] == 0x00 && b[3] == 0xC3) return true; // NOP(3); RET
+    return false;
+}
+
+// A tail-call JMP crosses from one function's entry interval into another's.
+// Ghidra treats such targets as function entries even when they have no
+// conventional prologue (large_x86_64.elf: 0x400190 is reached only by
+// `jmp 0x400190` from 0x400260). FunctionBodyFinalizer has not run yet, so
+// the target is still outside every actual body; create the entry now and
+// let the finalizer clamp the preceding function at this boundary.
+static int findCrossFunctionJumpTargets(Program* program, TaskMonitor* monitor,
+                                        int maxPerPass,
+                                        std::vector<Address>& createdCandidates,
+                                        uint64_t& bytesExamined) {
+    Memory* memory = program->getMemory();
+    FunctionManager* funcMgr = program->getFunctionManager();
+    if (!memory || !funcMgr) return 0;
+
+    LanguageID lid = program->getLanguageID();
+    std::string lidStr = lid.getIdAsString();
+    if (lidStr.find("x86") == std::string::npos &&
+        lidStr.find("i386") == std::string::npos)
+        return 0;
+
+    std::string arch = languageToArchShort(lidStr);
+    int bitness = (lidStr.find("64") != std::string::npos) ? 64 : 32;
+    auto disassembler = createDisassembler(arch, bitness, languageIsBigEndian(lidStr));
+
+    std::vector<uint64_t> entries;
+    FunctionIterator fit = funcMgr->getFunctions(true);
+    while (fit.hasNext()) {
+        Function* f = fit.next();
+        if (f && !f->isExternal())
+            entries.push_back(static_cast<uint64_t>(f->getEntryPoint().getOffset()));
+    }
+    std::sort(entries.begin(), entries.end());
+    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+    if (entries.empty()) return 0;
+
+    auto containingEntry = [&entries](uint64_t off, uint64_t& entry) {
+        auto it = std::upper_bound(entries.begin(), entries.end(), off);
+        if (it == entries.begin()) return false;
+        entry = *std::prev(it);
+        return true;
+    };
+
+    int found = 0;
+    auto blocks = memory->getBlocks();
+    for (auto* block : blocks) {
+        if (!block || !block->isExecute() || !block->isInitialized()) continue;
+        Address start = block->getStart();
+        Address end = block->getEnd();
+        if (!start.isValid() || !end.isValid()) continue;
+        uint64_t size = (end.getOffset() - start.getOffset() + 1);
+        if (size > 8 * 1024 * 1024) size = 8 * 1024 * 1024;
+        std::vector<uint8_t> buf(static_cast<size_t>(size));
+        int read = block->getBytes(start, buf.data(), static_cast<int>(buf.size()));
+        if (read < 2) continue;
+        size = static_cast<uint64_t>(read);
+        bytesExamined += size;
+
+        // Function Start Search runs before DisassemblyAnalyzer, so the
+        // listing does not contain these JMPs yet. Linear-decode the block to
+        // find instruction starts without mistaking immediate bytes for E9/EB.
+        for (uint64_t off = 0; off < size && found < maxPerPass &&
+                              !monitor->isCancelled();) {
+            int maxLen = std::min<int>(15, static_cast<int>(size - off));
+            std::vector<uint8_t> chunk(buf.begin() + static_cast<std::ptrdiff_t>(off),
+                                       buf.begin() + static_cast<std::ptrdiff_t>(off + maxLen));
+            DisassembledInstruction di{};
+            try {
+                di = disassembler->disassembleOne(
+                    chunk, start.getOffset() + static_cast<int64_t>(off));
+            } catch (...) {
+                ++off;
+                continue;
+            }
+            if (di.length <= 0 || di.length > maxLen) {
+                ++off;
+                continue;
+            }
+
+            std::string mnem = di.mnemonic;
+            std::transform(mnem.begin(), mnem.end(), mnem.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (mnem == "jmp" && (di.length == 2 || di.length == 5)) {
+                uint8_t b0 = buf[off];
+                int64_t rel = 0;
+                if (di.length == 2 && b0 == 0xEB) {
+                    rel = static_cast<int8_t>(buf[off + 1]);
+                } else if (di.length == 5 && b0 == 0xE9) {
+                    int32_t rel32 = 0;
+                    std::memcpy(&rel32, buf.data() + off + 1, sizeof(rel32));
+                    rel = rel32;
+                } else {
+                    off += static_cast<uint64_t>(di.length);
+                    continue;
+                }
+
+                int64_t srcOff = start.getOffset() + static_cast<int64_t>(off);
+                int64_t targetOff = srcOff + di.length + rel;
+                if (targetOff >= 0) {
+                    Address target(start.getAddressSpace(), targetOff);
+                    MemoryBlock* targetBlock = memory->getBlock(target);
+                    if (targetBlock && targetBlock->isExecute() &&
+                        targetBlock->isInitialized() &&
+                        !funcMgr->getFunctionAt(target) &&
+                        !funcMgr->getFunctionContaining(target)) {
+                        uint64_t srcEntry = 0, dstEntry = 0;
+                        const bool haveSrc = containingEntry(
+                            static_cast<uint64_t>(srcOff), srcEntry);
+                        const bool haveDst = containingEntry(
+                            static_cast<uint64_t>(targetOff), dstEntry);
+
+                        // A tiny compiler-generated epilogue stub (e.g.
+                        // `xor eax,eax; ret`) can be the nearest known entry
+                        // before a real function start. Its 3 bytes are folded
+                        // into the preceding function by Ghidra, while the
+                        // target right after it is a genuine entry reached by
+                        // this cross-function JMP (large_x86_64.elf 0x400dc0).
+                        // In that case the source/destination entry intervals
+                        // both resolve to the stub, so accept the target when
+                        // the stub ends exactly at it.
+                        bool afterTinyRetStub = false;
+                        if (haveSrc && haveDst && srcEntry == dstEntry &&
+                            static_cast<uint64_t>(targetOff) > dstEntry) {
+                            uint64_t gap = static_cast<uint64_t>(targetOff) - dstEntry;
+                            if (gap <= 8) {
+                                Address stubAddr(target.getAddressSpace(),
+                                                 static_cast<int64_t>(dstEntry));
+                                std::vector<uint8_t> stubBytes(static_cast<size_t>(gap));
+                                int got = 0;
+                                try {
+                                    got = memory->getBytes(stubAddr, stubBytes.data(),
+                                                           static_cast<int>(gap));
+                                } catch (...) {
+                                    got = 0;
+                                }
+                                if (got == static_cast<int>(gap)) {
+                                    uint64_t consumed = 0;
+                                    std::string lastMnem;
+                                    bool decodedAll = true;
+                                    while (consumed < gap) {
+                                        std::vector<uint8_t> chunk(
+                                            stubBytes.begin() + static_cast<std::ptrdiff_t>(consumed),
+                                            stubBytes.end());
+                                        DisassembledInstruction sdi{};
+                                        try {
+                                            sdi = disassembler->disassembleOne(
+                                                chunk, static_cast<uint64_t>(dstEntry) + consumed);
+                                        } catch (...) {
+                                            decodedAll = false;
+                                            break;
+                                        }
+                                        if (sdi.length <= 0 ||
+                                            consumed + static_cast<uint64_t>(sdi.length) > gap) {
+                                            decodedAll = false;
+                                            break;
+                                        }
+                                        lastMnem = sdi.mnemonic;
+                                        std::transform(lastMnem.begin(), lastMnem.end(),
+                                                       lastMnem.begin(),
+                                                       [](unsigned char c) {
+                                                           return static_cast<char>(std::tolower(c));
+                                                       });
+                                        consumed += static_cast<uint64_t>(sdi.length);
+                                    }
+                                    afterTinyRetStub =
+                                        decodedAll && consumed == gap &&
+                                        (lastMnem == "ret" || lastMnem == "retn" ||
+                                         lastMnem == "retf");
+                                }
+                            }
+                        }
+
+                        // A JMP that lands past a tiny epilogue stub but began
+                        // in a different entry interval is still an
+                        // intra-function branch: Ghidra folds the stub into
+                        // the preceding function. The afterTinyRetStub path
+                        // (srcEntry == dstEntry) is the real tail call.
+                        bool crossesStubOnly = false;
+                        if (haveSrc && haveDst && srcEntry != dstEntry) {
+                            Address dstAddr(target.getAddressSpace(),
+                                            static_cast<int64_t>(dstEntry));
+                            crossesStubOnly = beginsTrivialEpilogue(memory, dstAddr);
+                        }
+
+                        if (haveSrc && haveDst && !crossesStubOnly &&
+                            (srcEntry != dstEntry || afterTinyRetStub) &&
+                            targetOff != static_cast<int64_t>(dstEntry) &&
+                            isValidFunctionStartCandidate(program, target, arch, bitness,
+                                                          disassembler.get())) {
+                            uint8_t first = 0;
+                            try {
+                                memory->getBytes(target, &first, 1);
+                            } catch (...) {
+                                first = 0xCC;
+                            }
+                            if (first != 0xCC && first != 0x00) {
+                                try {
+                                    AddressSet body(target, target);
+                                    std::ostringstream funcName;
+                                    funcName << AutoNaming::nameVal(
+                                        "func", static_cast<uint64_t>(targetOff));
+                                    funcMgr->createFunction(funcName.str(), target, body,
+                                                            SourceType::ANALYSIS);
+                                    createdCandidates.push_back(target);
+                                    ++found;
+                                } catch (const std::exception&) {
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            off += static_cast<uint64_t>(di.length);
         }
     }
     return found;
@@ -583,7 +938,7 @@ static int findMultiInstructionPatterns(Program* program, TaskMonitor* monitor, 
 
     // Define byte triggers for the first instruction of each multi-instr pattern.
     // Format: { trigger_bytes, trigger_len, min_total_len, description }
-    struct PatternTrigger { const uint8_t* bytes; int len; int totalMin; };
+    struct PatternTrigger { const uint8_t* bytes; int len; int totalMin; bool peOnly; };
     // LEA r64, [RIP+disp32]: REX.W + 0x8D + modRM where mod=00, rm=101 (RIP-relative)
     static const uint8_t trig_lea_r[] = {0x48, 0x8D};
     // XOR ECX, ECX
@@ -599,10 +954,17 @@ static int findMultiInstructionPatterns(Program* program, TaskMonitor* monitor, 
     // XOR EAX, EAX (64-bit: xor rax,rax)
     static const uint8_t trig_xor_rax[] = {0x48, 0x31, 0xC0};
 
+    // XOR+JMP is a common intra-function idiom (`xor eax,eax; jmp cleanup`)
+    // on SysV code and Ghidra's GCC function-start patterns do not include it.
+    // Keep it for PE (Windows thunks rely on it) but not for ELF/Mach-O.
+    const bool isPE = program->getExecutableFormat() == "PE" ||
+                      program->getExecutableFormat() == "Portable Executable" ||
+                      program->getExecutableFormat() == "Portable Executable (PE)";
     PatternTrigger triggers[] = {
-        {trig_lea_r, 2, 12}, {trig_xor_ecx, 2, 7}, {trig_xor_edx, 2, 7},
-        {trig_xor_eax, 2, 7}, {trig_sub_rcx, 3, 8}, {trig_sub_rdx, 3, 8},
-        {trig_xor_rax, 3, 7}
+        {trig_lea_r, 2, 12, false}, {trig_xor_ecx, 2, 7, true},
+        {trig_xor_edx, 2, 7, true}, {trig_xor_eax, 2, 7, true},
+        {trig_sub_rcx, 3, 8, false}, {trig_sub_rdx, 3, 8, false},
+        {trig_xor_rax, 3, 7, true}
     };
     const int numTriggers = sizeof(triggers) / sizeof(triggers[0]);
 
@@ -635,6 +997,7 @@ static int findMultiInstructionPatterns(Program* program, TaskMonitor* monitor, 
             bool matched = false;
             for (int t = 0; t < numTriggers; t++) {
                 const auto& tr = triggers[t];
+                if (tr.peOnly && !isPE) continue;
                 if (tr.len > remaining) continue;
                 if (std::memcmp(p, tr.bytes, tr.len) != 0) continue;
                 if (tr.totalMin > remaining) continue;
@@ -1190,7 +1553,7 @@ bool FunctionStartAnalyzer::added(Program* program, const AddressSetView& set,
                                    TaskMonitor* monitor, MessageLog& log) {
     if (!program || !monitor) return false;
     std::vector<Address> createdCandidates;
-    int total = 0, pdataC = 0, patC = 0, callC = 0, jmpC = 0, multiC = 0, zeroC = 0, wrapC = 0, trimC = 0;
+    int total = 0, pdataC = 0, patC = 0, callC = 0, jmpC = 0, jtC = 0, multiC = 0, zeroC = 0, wrapC = 0, trimC = 0;
     FunctionManager* funcMgr = program->getFunctionManager();
 
     {
@@ -1212,6 +1575,14 @@ bool FunctionStartAnalyzer::added(Program* program, const AddressSetView& set,
         uint64_t bytes = 0;
         callC = findCallDestinations(program, monitor, 10000, createdCandidates, bytes);
         total += callC;
+    }
+
+    {
+        monitor->setMessage("Searching for cross-function JMP targets...");
+        uint64_t bytes = 0;
+        jtC = findCrossFunctionJumpTargets(program, monitor, 10000,
+                                           createdCandidates, bytes);
+        total += jtC;
     }
 
     {
@@ -1293,6 +1664,7 @@ bool FunctionStartAnalyzer::added(Program* program, const AddressSetView& set,
               " pattern:" + std::to_string(patC) +
               " call:" + std::to_string(callC) +
               " jmp:" + std::to_string(jmpC) +
+              " jtarget:" + std::to_string(jtC) +
               " multi:" + std::to_string(multiC) +
               " zero:" + std::to_string(zeroC) +
               " wrapper:" + std::to_string(wrapC) +

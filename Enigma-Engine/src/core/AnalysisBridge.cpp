@@ -1,4 +1,5 @@
 #include <ghidra/AnalysisBridge.h>
+#include <ghidra/TrackedRegisterSeeder.h>
 #include <ghidra/TaskMonitor.h>
 #include <ghidra/MessageLog.h>
 #include <ghidra/AddressSet.h>
@@ -17,10 +18,14 @@
 #include <ghidra/Composite.h>
 #include <ghidra/FunctionSignature.h>
 #include <ghidra/ParameterDefinition.h>
+#include <ghidra/Instruction.h>
+#include <ghidra/ReferenceManager.h>
+#include <ghidra/Reference.h>
 
 #include <libdecomp.hh>
 #include <funcdata.hh>
 #include <fspec.hh>
+#include <override.hh>
 #include <sleigh_arch.hh>
 #include <type.hh>
 
@@ -119,6 +124,12 @@ void AnalysisBridge::bridgeFunctions() {
     ghidra_decompiler::Scope* globalScope = getGlobalScope();
     if (!codeSpc || !globalScope) return;
 
+    // Seed the ABI-mandated register values Ghidra's address analyzers write
+    // into ProgramContext (MIPS $t9; PowerPC r30/r2 GOT base). Shared with
+    // DecompInterface so non-audit consumers get the same call resolution.
+    TrackedRegisterSeeder::seed(program_, arch_,
+        [this](uint64_t addr) { return mapAddress(addr); });
+
     FunctionIterator fit = fm->getFunctions(true);
     int bridgedCount = 0;
 
@@ -162,6 +173,112 @@ void AnalysisBridge::bridgeFunctions() {
 
     if (std::getenv("ENIGMA_DEBUG") && bridgedCount > 0) {
         std::cerr << "[AnalysisBridge] Bridged " << bridgedCount << " functions into arch->symboltab\n";
+    }
+}
+
+// Forward Ghidra-compatible instruction flow overrides into the standalone
+// decompiler. Its SLEIGH translation only produces BRANCH for x86 JMP, so
+// ProgramDB's CALL_RETURN override is what turns a tail-call JMP into a call
+// followed by a return. Other analyzers (no-return calls, ARM link-register
+// returns, MIPS/PPC thunk calls) populate the same override field.
+void AnalysisBridge::bridgeFlowOverridesForFunction(
+    Program* program, ghidra_decompiler::Architecture* arch, Function* func,
+    const std::function<uint64_t(uint64_t)>& mapAddress) {
+    if (!program || !arch || !func) return;
+
+    FunctionManager* fm = program->getFunctionManager();
+    Listing* listing = program->getListing();
+    ReferenceManager* refMgr = program->getReferenceManager();
+    ghidra_decompiler::AddrSpace* codeSpc = arch->getDefaultCodeSpace();
+    ghidra_decompiler::Scope* globalScope = arch->symboltab
+        ? arch->symboltab->getGlobalScope() : nullptr;
+    if (!listing || !codeSpc || !globalScope) return;
+
+    uint64_t entry = func->getEntryPoint().getOffset();
+    uint64_t mappedEntry = mapAddress ? mapAddress(entry) : entry;
+    ghidra_decompiler::Funcdata* fd =
+        globalScope->queryFunction(ghidra_decompiler::Address(codeSpc, mappedEntry));
+    if (!fd) return;
+
+    std::vector<Instruction*> instructions = listing->getInstructions(func->getBody());
+
+    // Mark tail calls against the *final* function map. Doing this during
+    // disassembly is too early: FunctionStartAnalyzer can create a transient
+    // entry inside another function (large_x86_64.elf: 0x4004c3), which is
+    // later absorbed into 0x4004c0. Ghidra's late flow analysis only treats an
+    // unconditional jump as a tail call when the target survives as a distinct
+    // function entry (0x40027e/0x400288 -> 0x400190).
+    if (fm && refMgr) {
+        for (Instruction* instr : instructions) {
+            if (!instr) continue;
+            FlowType* ft = instr->getFlowType();
+            if (!ft || !ft->isJump() || ft->isConditional() || ft->isComputed()) {
+                continue;
+            }
+
+            std::vector<Reference*> refs =
+                refMgr->getFlowReferencesFrom(instr->getAddress());
+            for (Reference* ref : refs) {
+                if (!ref) continue;
+                const RefType* rt = ref->getReferenceType();
+                if (!rt || !rt->isJump() || rt->isConditional()) continue;
+
+                Address target = ref->getToAddress();
+                Function* targetFunc = fm->getFunctionAt(target);
+                if (!targetFunc || targetFunc == func || targetFunc->isExternal()) {
+                    continue;
+                }
+                if (func->getBody().contains(target)) continue;
+
+                instr->setFlowType(
+                    const_cast<FlowType*>(&RefTypes::CALL_TERMINATOR));
+                instr->setFlowOverride(FlowOverride::CALL_RETURN);
+                break;
+            }
+        }
+    }
+
+    for (Instruction* instr : instructions) {
+        if (!instr) continue;
+        ghidra_decompiler::uint4 type = ghidra_decompiler::Override::NONE;
+        switch (instr->getFlowOverride()) {
+        case FlowOverride::BRANCH:
+            type = ghidra_decompiler::Override::BRANCH;
+            break;
+        case FlowOverride::CALL:
+            type = ghidra_decompiler::Override::CALL;
+            break;
+        case FlowOverride::CALL_RETURN:
+            type = ghidra_decompiler::Override::CALL_RETURN;
+            break;
+        case FlowOverride::RETURN:
+            type = ghidra_decompiler::Override::RETURN;
+            break;
+        case FlowOverride::NONE:
+            continue;
+        }
+        if (type == ghidra_decompiler::Override::NONE) continue;
+
+        uint64_t off = instr->getAddress().getOffset();
+        uint64_t mappedOff = mapAddress ? mapAddress(off) : off;
+        fd->getOverride().insertFlowOverride(
+            ghidra_decompiler::Address(codeSpc, mappedOff), type);
+    }
+}
+
+void AnalysisBridge::bridgeFlowOverrides() {
+    if (!program_ || !arch_) return;
+
+    FunctionManager* fm = program_->getFunctionManager();
+    if (!fm) return;
+
+    FunctionIterator fit = fm->getFunctions(true);
+    while (fit.hasNext()) {
+        Function* func = fit.next();
+        if (!func || func->isExternal()) continue;
+        bridgeFlowOverridesForFunction(
+            program_, arch_, func,
+            [this](uint64_t addr) { return mapAddress(addr); });
     }
 }
 
@@ -834,6 +951,7 @@ void AnalysisBridge::execute() {
     runAnalysis();
     enrichSymbolNames();
     bridgeFunctions();
+    bridgeFlowOverrides();
     bridgeTypes();
     bridgeImportSignatures();
     bridgeNoReturnFlags();

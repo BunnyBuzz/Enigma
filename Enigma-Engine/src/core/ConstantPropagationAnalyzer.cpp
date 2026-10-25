@@ -42,10 +42,12 @@ bool ConstantPropagationAnalyzer::canAnalyze(Program* program) const {
 }
 
 bool ConstantPropagationAnalyzer::getDefaultEnablement(Program* program) const {
-    Address min = program->getMinAddress();
-    if (!min.isValid() || min.getOffset() == 0) return false;
-    if (program->getAddressFactory()->getDefaultAddressSpace()->getSize() < 32) return false;
-    return true;
+    // Ghidra enables these purely on default-address-space width. Do NOT
+    // reject min offset 0: ELF loads its header block at address 0, so that
+    // test silently disabled every address analyzer on ELF (MIPS/PPC GOT
+    // resolution, ARM literal refs, ...).
+    if (!program || !program->getAddressFactory()) return false;
+    return program->getAddressFactory()->getDefaultAddressSpace()->getSize() >= 32;
 }
 
 bool ConstantPropagationAnalyzer::added(Program* program, const AddressSetView& set,

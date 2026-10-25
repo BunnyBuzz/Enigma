@@ -14,6 +14,7 @@
 #include <ghidra/Union.h>
 #include <ghidra/Enum.h>
 #include <ghidra/TypeDatabase.h>
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -37,6 +38,10 @@ public:
     void execute();
     void runAnalysis();
     void bridgeFunctions();
+    void bridgeFlowOverrides();
+    static void bridgeFlowOverridesForFunction(
+        Program* program, ghidra_decompiler::Architecture* arch, Function* func,
+        const std::function<uint64_t(uint64_t)>& mapAddress);
     void bridgeTypes();
     void bridgeLabels();
     void bridgeReadOnlyRanges();

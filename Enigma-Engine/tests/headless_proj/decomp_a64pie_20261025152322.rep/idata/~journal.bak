@@ -1,0 +1,2 @@
+IADD:00000000:/aarch64_pie_dyn.elf
+IDSET:/aarch64_pie_dyn.elf:c0a813da90156763269761800

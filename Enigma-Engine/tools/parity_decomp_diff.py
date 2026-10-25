@@ -119,7 +119,7 @@ def body_after(text):
 
 PTR_RE = re.compile(r"^PTR_([A-Za-z_]\w*?)_[0-9a-fA-F]+$")
 AUTO_ADDR_RE = re.compile(
-    r"^(?:FUN_|func_0x|sub_0x|function_0x|LAB_|DAT_)0*([0-9a-fA-F]+)$")
+    r"^(?:FUN_|func_0x|sub_0x|function_0x|LAB_|DAT_|ptr_0x)0*([0-9a-fA-F]+)$")
 
 
 def callee_key(tok, side_delta):
@@ -151,6 +151,7 @@ def norm_callee(tok, delta=0):
     """Map spelling variants to import names: Ghidra PTR_name_addr and
     Enigma _name (ELF symbol) both become name. Anonymous GOT slots
     (PTR_<hex> / ptr_0x<hex>) are rebased by delta for comparison."""
+    tok = tok.lstrip("_") or tok
     m = PTR_RE.match(tok)
     if m:
         stripped = m.group(1).lstrip("_")
@@ -158,13 +159,13 @@ def norm_callee(tok, delta=0):
     m = PTR_HEX_RE.match(tok)
     if m:
         try:
-            return "ptr_0x%x" % (int(m.group(1), 16) - delta)
+            # Keep the Ghidra-space address here; callee_key adds side_delta
+            # to Enigma's raw address so both sides meet at the Ghidra base.
+            return "ptr_0x%x" % int(m.group(1), 16)
         except ValueError:
             pass
     if GHIDRA_INTRINSIC_RE.match(tok):
         return ""
-    stripped = tok.lstrip("_")
-    tok = stripped or tok
     return base_import_name(tok)
 
 

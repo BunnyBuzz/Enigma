@@ -49,7 +49,8 @@ def main():
         with open(sys.argv[4], encoding="utf-8", errors="replace") as f:
             addrs = []
             for ln in f.read().replace(",", " ").split():
-                ln = ln.strip()
+                # PowerShell's UTF8 writer adds a BOM; stoull rejects it.
+                ln = ln.strip().lstrip("\ufeff")
                 if ln:
                     addrs.append(ln)
     else:

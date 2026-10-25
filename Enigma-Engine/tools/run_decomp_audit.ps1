@@ -13,9 +13,17 @@ $ErrorActionPreference = "Continue"
 $root = "C:\Users\pc\Desktop\Enigma IDE Local\Enigma-Engine"
 $corpus = "$root\tests\corpus"
 $tmp = "C:\Users\pc\AppData\Local\Temp\opencode\decomp_audit"
-$ghidra = "C:\Users\pc\Desktop\Crack tools\ghidra\support\analyzeHeadless.bat"
+. "$root\tools\ghidra_env.ps1"
+$ghHome = Resolve-GhidraHome
+if (-not $ghHome) {
+    Write-Output "MISSING Ghidra install (set GHIDRA_HOME)"
+    exit 1
+}
+$ghidra = Join-Path $ghHome "support\analyzeHeadless.bat"
+$ghVersion = Get-GhidraVersion $ghHome
 $proj = "$root\tests\headless_proj"
-$env:JAVA_HOME = "C:\java\jdk-21"
+$javaHome = Resolve-GhidraJavaHome
+if ($javaHome) { $env:JAVA_HOME = $javaHome }
 $env:ENIGMA_SLEIGH_DIR = "$root\sleigh"
 
 $binPath = Join-Path $corpus $Binary
@@ -29,7 +37,7 @@ New-Item -ItemType Directory -Force -Path $enDir | Out-Null
 Get-ChildItem $ghDir -Filter *.c -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem $enDir -Filter *.c -ErrorAction SilentlyContinue | Remove-Item -Force
 
-Write-Output "=== GHIDRA $Binary ==="
+Write-Output "=== GHIDRA $Binary (Ghidra $ghVersion) ==="
 $env:GHIDRA_DECOMP_OUT = $ghDir
 $projName = "decomp$((Get-Date).ToString('yyyyMMddHHmmss'))"
 if ($env:GHIDRA_DECOMP_ONLY) { Write-Output "Ghidra entry filter: $env:GHIDRA_DECOMP_ONLY" }
@@ -40,15 +48,24 @@ $enArgs = @("$root", $binPath, $enDir)
 if ($AddrsFile -ne "" -and (Test-Path $AddrsFile)) { $enArgs += $AddrsFile }
 elseif ($Addrs -ne "") {
     $addrTmp = Join-Path $tmp ($Binary + "_addrs.txt")
-    $Addrs -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" } |
-        Set-Content $addrTmp -Encoding UTF8
+    $addrLines = $Addrs -split "," | ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -ne "" }
+    # UTF8 without BOM: enigma_decompile_full parses these with stoull.
+    [System.IO.File]::WriteAllText($addrTmp, ($addrLines -join "`n"),
+        (New-Object System.Text.UTF8Encoding($false)))
     $enArgs += $addrTmp
 }
 & python3 "$root\tools\en_singles.py" @enArgs
 
 Write-Output "=== DIFF $Binary (delta $Delta) ==="
-$ghListing = Join-Path $corpus "ghidra_listing\$Binary.csv"
-if (-not (Test-Path $ghListing)) { $ghListing = $null }
+if ($env:GHIDRA_DECOMP_ONLY) {
+    # The decompile dump is a requested subset; comparing it with the full
+    # listing would report every omitted function as ghidra-only.
+    $ghListing = $null
+} else {
+    $ghListing = Join-Path $corpus "ghidra_listing\$Binary.csv"
+    if (-not (Test-Path $ghListing)) { $ghListing = $null }
+}
 if ($ghListing) {
     & python3 "$root\tools\parity_decomp_diff.py" $ghDir $enDir --delta $Delta --ghidra-listing $ghListing
 } else {

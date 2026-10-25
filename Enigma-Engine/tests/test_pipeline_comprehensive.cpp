@@ -191,7 +191,8 @@ int main() {
         TEST("mov is fallthrough", ghidra::Disassembler::determineFlowType("mov", {"eax", "ebx"})->isFallthrough());
         TEST("push is fallthrough", ghidra::Disassembler::determineFlowType("push", {"rax"})->isFallthrough());
         TEST("pop is fallthrough", ghidra::Disassembler::determineFlowType("pop", {"rax"})->isFallthrough());
-        TEST("syscall is terminal", ghidra::Disassembler::determineFlowType("syscall", noOps)->isTerminal());
+        TEST("syscall falls through", ghidra::Disassembler::determineFlowType("syscall", noOps)->isFallthrough());
+        TEST("svc falls through", ghidra::Disassembler::determineFlowType("svc", {"0x0"})->isFallthrough());
         TEST("b (ARM) is jump", ghidra::Disassembler::determineFlowType("b", {"0x1000"})->isJump());
         TEST("bl (ARM) is call", ghidra::Disassembler::determineFlowType("bl", {"0x2000"})->isCall());
         TEST("bx lr (ARM) is terminal", ghidra::Disassembler::determineFlowType("bx", {"lr"})->isTerminal());

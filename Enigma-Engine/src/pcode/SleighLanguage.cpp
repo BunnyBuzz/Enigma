@@ -187,6 +187,10 @@ void SleighLanguage::readInitialDescription() {
         buildX86Registers();
     } else if (procName == "ARM" || procName == "AARCH64" || procName == "arm" || procName == "aarch64") {
         buildARMRegisters();
+    } else if (procName == "MIPS" || procName == "mips") {
+        buildMipsRegisters();
+    } else if (procName == "PowerPC" || procName == "powerpc" || procName == "PPC") {
+        buildPowerPCRegisters();
     }
 }
 
@@ -309,6 +313,63 @@ void SleighLanguage::buildARMRegisters() {
     addReg("sp", 13, Register::TYPE_SP);
     addReg("lr", 14, Register::TYPE_NONE);
     addReg("pc", 15, Register::TYPE_PC);
+    programCounter = registerMap_["pc"];
+}
+
+void SleighLanguage::buildMipsRegisters() {
+    // Mirrors the GPR table in sleigh/MIPS/mips.sinc:
+    //   define register offset=0 size=$(REGSIZE) [ zero at v0 v1 ... pc ];
+    // Offsets are index * register size. Architecture analyzers require
+    // t9/gp/ra (MipsAddressAnalyzer) and the stack pointer.
+    const int regSize = description ? description->getSize() / 8 : 4;
+    static const char* const names[] = {
+        "zero", "at", "v0", "v1",
+        "a0", "a1", "a2", "a3",
+        "t0", "t1", "t2", "t3",
+        "t4", "t5", "t6", "t7",
+        "s0", "s1", "s2", "s3",
+        "s4", "s5", "s6", "s7",
+        "t8", "t9", "k0", "k1",
+        "gp", "sp", "s8", "ra",
+        "pc"
+    };
+    auto addReg = [&](const std::string& name, uint64_t offset, int typeFlags) {
+        Address addr(regAddrSpace_, static_cast<int64_t>(offset));
+        auto reg = std::make_unique<Register>(name, name, addr, regSize,
+                                              description->getEndian() == Endian::BIG, typeFlags);
+        registerMap_[name] = reg.get();
+        regOwnedStorage_.push_back(std::move(reg));
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        int flags = Register::TYPE_NONE;
+        if (std::string(names[i]) == "sp") flags = Register::TYPE_SP;
+        else if (std::string(names[i]) == "pc") flags = Register::TYPE_PC;
+        addReg(names[i], i * regSize, flags);
+    }
+    programCounter = registerMap_["pc"];
+}
+
+void SleighLanguage::buildPowerPCRegisters() {
+    // Mirrors sleigh/PowerPC/ppc_common.sinc: r0-r31 at 0,
+    // pc at 0x780, xer at 0x1004, lr at 0x1020, ctr at 0x1024.
+    // PowerPCAddressAnalyzer needs r2 (TOC) and r30.
+    const int regSize = description ? description->getSize() / 8 : 4;
+    auto addReg = [&](const std::string& name, uint64_t offset, int typeFlags) {
+        Address addr(regAddrSpace_, static_cast<int64_t>(offset));
+        auto reg = std::make_unique<Register>(name, name, addr, regSize,
+                                              description->getEndian() == Endian::BIG, typeFlags);
+        registerMap_[name] = reg.get();
+        regOwnedStorage_.push_back(std::move(reg));
+    };
+    for (int i = 0; i < 32; ++i) {
+        std::string name = "r" + std::to_string(i);
+        addReg(name, static_cast<uint64_t>(i) * regSize,
+               i == 1 ? Register::TYPE_SP : Register::TYPE_NONE);
+    }
+    addReg("xer", 0x1004, Register::TYPE_NONE);
+    addReg("lr", 0x1020, Register::TYPE_NONE);
+    addReg("ctr", 0x1024, Register::TYPE_NONE);
+    addReg("pc", 0x780, Register::TYPE_PC);
     programCounter = registerMap_["pc"];
 }
 

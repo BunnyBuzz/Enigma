@@ -15,6 +15,9 @@
 #include <ghidra/Msg.h>
 #include <ghidra/Memory.h>
 #include <ghidra/MemoryBlock.h>
+#include <ghidra/ReferenceManager.h>
+#include <ghidra/Reference.h>
+#include <ghidra/RefType.h>
 
 #include <string>
 #include <vector>
@@ -48,6 +51,96 @@ bool FunctionBodyFinalizer::canAnalyze(Program* program) const {
     return program != nullptr;
 }
 
+// A conditional branch never leaves its function. If an analysis-created
+// function entry is targeted by a conditional branch from inside another
+// function, it is an interior basic block that the byte-pattern pass carved
+// out before the function bodies existed. large_x86_64.elf: `jz 0x4004c0`
+// from 0x4004a7 made the shared `xor eax,eax; ret` epilogue its own function,
+// splitting memcmp at 0x400490. Ghidra keeps 0x4004c0 inside 0x400490.
+//
+// Drop such entries before body expansion for two reasons:
+//  - the source function can then absorb the block, matching Ghidra's body;
+//  - decompiler entry registers stay tied to the real function instead of
+//    degrading to unaff_RDI/unaff_RSI.
+// Never drop a symbol the user created or a function that is also a call
+// target. Unconditional jump targets are left alone: those are tail calls.
+static int removeConditionalBranchTargetFunctions(Program* program, MessageLog& log) {
+    FunctionManager* funcMgr = program->getFunctionManager();
+    ReferenceManager* refMgr = program->getReferenceManager();
+    if (!funcMgr || !refMgr) return 0;
+
+    std::vector<uint64_t> entries;
+    {
+        FunctionIterator fit = funcMgr->getFunctions(true);
+        while (fit.hasNext()) {
+            Function* f = fit.next();
+            if (!f) continue;
+            entries.push_back(static_cast<uint64_t>(f->getEntryPoint().getOffset()));
+        }
+        std::sort(entries.begin(), entries.end());
+    }
+    if (entries.empty()) return 0;
+
+    std::vector<Address> doomed;
+    FunctionIterator fit = funcMgr->getFunctions(true);
+    while (fit.hasNext()) {
+        Function* func = fit.next();
+        if (!func || func->isExternal()) continue;
+        if (isUserDefined(func->getSource())) continue;
+
+        // Only synthetic entries are eligible. A named image function (entry,
+        // _start, an exported symbol) is authoritative even in odd shared-code
+        // cases.
+        const std::string& name = func->getName();
+        if (name.rfind("func_0x", 0) != 0) continue;
+
+        Address entryAddr = func->getEntryPoint();
+        uint64_t entry = static_cast<uint64_t>(entryAddr.getOffset());
+        bool interiorBranch = false;
+        bool directCall = false;
+        bool externalJump = false;
+
+        for (Reference* ref : refMgr->getReferencesTo(entryAddr)) {
+            if (!ref) continue;
+            const RefType* rt = ref->getReferenceType();
+            if (!rt || !rt->isFlow()) continue;
+            if (rt->isCall()) {
+                directCall = true;
+                continue;
+            }
+
+            uint64_t from = static_cast<uint64_t>(ref->getFromAddress().getOffset());
+            auto it = std::upper_bound(entries.begin(), entries.end(), from);
+            if (it == entries.begin()) continue;
+            --it;
+            if (*it == entry) continue; // source is this same entry interval
+
+            if (rt->isConditional()) {
+                interiorBranch = true;
+            } else if (rt->isJump()) {
+                // Another function tail-jumps here: FunctionStartAnalyzer has
+                // already decided this is a real cross-function entry.
+                externalJump = true;
+            }
+        }
+
+        if (interiorBranch && !directCall && !externalJump) {
+            doomed.push_back(entryAddr);
+        }
+    }
+
+    int removed = 0;
+    for (const Address& entry : doomed) {
+        if (funcMgr->removeFunction(entry)) ++removed;
+    }
+    if (removed > 0) {
+        log.append("Function Body Finalizer",
+                   "Removed " + std::to_string(removed) +
+                   " conditional-branch target function(s)");
+    }
+    return removed;
+}
+
 bool FunctionBodyFinalizer::added(Program* program, const AddressSetView& set,
                                   TaskMonitor* monitor, MessageLog& log)
 {
@@ -59,6 +152,10 @@ bool FunctionBodyFinalizer::added(Program* program, const AddressSetView& set,
     if (!funcMgr || !listing || !af) return false;
 
     if (monitor) monitor->setMessage(getName() + ": Starting");
+
+    // Merge interior branch targets into their containing functions before
+    // computing final bodies.
+    removeConditionalBranchTargetFunctions(program, log);
 
     // 1. Collect all functions and their entry points.
     std::vector<Function*> allFuncs;

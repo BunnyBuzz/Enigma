@@ -15,6 +15,7 @@
 #include "ghidra/Function.h"
 #include "ghidra/Memory.h"
 #include "ghidra/Msg.h"
+#include "ghidra/AnalysisBridge.h"
 
 #include <libdecomp.hh>
 #include <sleigh_arch.hh>
@@ -295,6 +296,9 @@ public:
             if (fd->isProcStarted()) {
                 arch_->clearAnalysis(fd);
             }
+            AnalysisBridge::bridgeFlowOverridesForFunction(
+                program_, arch_.get(), func,
+                [](uint64_t addr) { return addr; });
 
             if (arch_->allacts.getCurrent() != nullptr) {
                 arch_->allacts.getCurrent()->reset(*fd);
@@ -379,6 +383,9 @@ public:
             if (fd->isProcStarted()) {
                 arch_->clearAnalysis(fd);
             }
+            AnalysisBridge::bridgeFlowOverridesForFunction(
+                program_, arch_.get(), func,
+                [](uint64_t addr) { return addr; });
             fd->startProcessing();
 
             // Extract p-code from basic blocks

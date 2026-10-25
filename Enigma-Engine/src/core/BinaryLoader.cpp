@@ -306,7 +306,16 @@ public:
         if (!languageId.empty() && languageId != "unknown") {
             program->setLanguageID(LanguageID(languageId));
         }
-        program->setCompilerSpecID(CompilerSpecID(guessCompilerSpecFromArch(arch_, bitness_)));
+        std::string compilerSpecId = guessCompilerSpecFromArch(arch_, bitness_);
+        // Ghidra pairs Linux ELF with the GCC compiler spec. The processor-only
+        // guess above is the Windows spec for x86, which would make downstream
+        // analysis/decompilation treat RCX/RDX as the first arguments instead
+        // of RDI/RSI/RDX. Non-x86 ELF keeps the existing "default" choice; ELF
+        // Swift/Go binaries override this below.
+        if (formatName_ == "ELF" && compilerSpecId == "windows") {
+            compilerSpecId = "gcc";
+        }
+        program->setCompilerSpecID(CompilerSpecID(compilerSpecId));
 
         // GP-3960: Recognize Swift and golang ELF binaries from section names
         // (mirrors ElfLoader.detectCompilerName: SwiftUtils.isSwift, GoRttiMapper.hasGolangSections)
@@ -1553,6 +1562,91 @@ private:
         } else {
             parseELF64Relocations();
         }
+        parseELFMipsGot();
+    }
+
+    // MIPS PSABI dynamic GOT layout: .dynamic carries DT_MIPS_LOCAL_GOTNO,
+    // DT_MIPS_GOTSYM and DT_MIPS_SYMTABNO instead of per-slot relocation
+    // entries. Global GOT slots start at PLTGOT + LOCAL_GOTNO*ptrSize and map
+    // dynsym[GOTSYM..SYMTABNO) in order. Without this the GOT loads in PIC
+    // _start have no symbol names (Ghidra labels them PTR_<name>_<addr>).
+    void parseELFMipsGot() {
+        if (arch_ != "MIPS") return;
+
+        const bool is32 = (bitness_ == 32);
+        uint64_t shoff = is32 ? elf32(32) : elf64(40);
+        uint16_t shnum = is32 ? elf16(48) : elf16(60);
+        uint16_t shentsize = is32 ? elf16(46) : elf16(58);
+        if (shoff == 0 || shnum == 0 || shentsize == 0) return;
+
+        uint64_t dynOff = 0, dynSize = 0;
+        uint64_t dynsymOff = 0, dynsymSize = 0, dynsymEntSize = 0;
+        uint32_t dynsymLink = 0;
+        for (uint16_t i = 0; i < shnum; ++i) {
+            uint64_t so = shoff + static_cast<uint64_t>(i) * shentsize;
+            if (so + (is32 ? 40u : 64u) > rawData_.size()) break;
+            uint32_t type = elf32(so + 4);
+            if (type == 6) { // SHT_DYNAMIC
+                dynOff = is32 ? elf32(so + 16) : elf64(so + 24);
+                dynSize = is32 ? elf32(so + 20) : elf64(so + 32);
+            } else if (type == 11) { // SHT_DYNSYM
+                dynsymOff = is32 ? elf32(so + 16) : elf64(so + 24);
+                dynsymSize = is32 ? elf32(so + 20) : elf64(so + 32);
+                dynsymEntSize = is32 ? elf32(so + 36) : elf64(so + 56);
+                dynsymLink = elf32(so + (is32 ? 24 : 40));
+            }
+        }
+        if (dynOff == 0 || dynSize == 0 || dynsymOff == 0 || dynsymSize == 0)
+            return;
+        if (dynsymEntSize == 0) dynsymEntSize = is32 ? 16 : 24;
+
+        uint64_t strOff = 0;
+        if (dynsymLink < shnum) {
+            uint64_t so = shoff + static_cast<uint64_t>(dynsymLink) * shentsize;
+            if (so + (is32 ? 40u : 64u) <= rawData_.size())
+                strOff = is32 ? elf32(so + 16) : elf64(so + 24);
+        }
+        if (strOff == 0) return;
+
+        uint64_t gotBase = 0, localGotNo = 0, gotSym = 0, symtabNo = 0;
+        uint64_t dynEntSize = is32 ? 8 : 16;
+        for (uint64_t off = 0; off + dynEntSize <= dynSize; off += dynEntSize) {
+            uint64_t eo = dynOff + off;
+            if (eo + dynEntSize > rawData_.size()) break;
+            int64_t tag = is32 ? static_cast<int64_t>(elfs32(eo)) : elfs64(eo);
+            uint64_t val = is32 ? elf32(eo + 4) : elf64(eo + 8);
+            if (tag == 0) break; // DT_NULL
+            if (tag == 3) gotBase = val;                 // DT_PLTGOT
+            else if (tag == 0x7000000a) localGotNo = val; // DT_MIPS_LOCAL_GOTNO
+            else if (tag == 0x70000011) symtabNo = val;   // DT_MIPS_SYMTABNO
+            else if (tag == 0x70000013) gotSym = val;     // DT_MIPS_GOTSYM
+        }
+        if (gotBase == 0 || symtabNo <= gotSym) return;
+
+        uint64_t ptrSize = is32 ? 4 : 8;
+        uint64_t maxSyms = dynsymSize / dynsymEntSize;
+        for (uint64_t idx = gotSym; idx < symtabNo && idx < maxSyms; ++idx) {
+            uint64_t symOff = dynsymOff + idx * dynsymEntSize;
+            if (symOff + 4 > rawData_.size()) break;
+            uint32_t nameIdx = elf32(symOff);
+            if (nameIdx == 0) continue;
+            std::string name = readStringAtOffset(strOff + nameIdx);
+            if (name.empty() || name == "(dynamic)") continue;
+
+            uint64_t slot = gotBase + (localGotNo + (idx - gotSym)) * ptrSize;
+            bool exists = false;
+            for (const auto& existing : imports_) {
+                if (existing.address == slot && !existing.functionName.empty()) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (exists) continue;
+            ImportInfo imp{};
+            imp.functionName = name;
+            imp.address = slot;
+            imports_.push_back(imp);
+        }
     }
 
     // PLT layout per arch: {header bytes, stub size}. Standard values used by
@@ -1605,6 +1699,33 @@ private:
         if (arch == "PowerPC") return 21;
         if (arch == "RISCV") return 5;
         return 7;
+    }
+
+    uint64_t elfVaToFileOffset(uint64_t va) const {
+        for (const auto& s : sections_) {
+            if (s.fileSize == 0) continue;
+            if (va >= s.virtualAddress && va < s.virtualAddress + s.fileSize)
+                return s.fileOffset + (va - s.virtualAddress);
+        }
+        return INVALID_FILE_OFFSET;
+    }
+
+    std::string elfArrayFunctionName(uint64_t offset) const {
+        const uint64_t ptrSize = bitness_ == 64 ? 8 : 4;
+        for (const auto& s : sections_) {
+            if (s.name != ".init_array" && s.name != ".fini_array") continue;
+            if (offset < s.virtualAddress ||
+                offset >= s.virtualAddress + s.virtualSize) continue;
+            uint64_t index = (offset - s.virtualAddress) / ptrSize;
+            return (s.name == ".init_array" ? "_INIT_" : "_FINI_") +
+                   std::to_string(index);
+        }
+        return {};
+    }
+
+    static bool isElfRelativeRelocation(uint32_t type) {
+        // x86_64, ARM, MIPS, AArch64 RELATIVE relocation types.
+        return type == 8 || type == 23 || type == 3 || type == 1027;
     }
 
     void parseELF64Relocations() {
@@ -1673,9 +1794,47 @@ private:
                         }
                     }
                 }
-                if (symName.empty() || symName == "(dynamic)") continue;
+                uint64_t gotSlot = elf64(rOffset); // r_offset = relocated VA
+                uint64_t addend = 0;
+                if (type == 4 && rOffset + 24 <= rawData_.size()) {
+                    addend = elf64(rOffset + 16);
+                } else if (type == 9) {
+                    uint64_t addendOff = elfVaToFileOffset(gotSlot);
+                    if (addendOff != INVALID_FILE_OFFSET &&
+                        addendOff + 8 <= rawData_.size())
+                        addend = elf64(addendOff);
+                }
 
-                uint64_t gotSlot = elf64(rOffset); // r_offset = GOT slot VA
+                if (symName.empty()) {
+                    // The ELF loader marks .init_array/.fini_array targets as
+                    // external entry points; name them _INIT_n/_FINI_n before
+                    // function discovery so the imported name is retained.
+                    if (symIdx == 0 && isElfRelativeRelocation(rType) &&
+                        addend != 0) {
+                        std::string arrayName = elfArrayFunctionName(gotSlot);
+                        if (!arrayName.empty()) {
+                            bool exists = false;
+                            for (const auto& s : symbols_) {
+                                if (s.isFunction && s.address == addend) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                            if (!exists) {
+                                SymbolInfo sym{};
+                                sym.name = arrayName;
+                                sym.address = addend;
+                                sym.size = 0;
+                                sym.isFunction = true;
+                                sym.isExternal = false;
+                                sym.elfSymbolType = 2;
+                                symbols_.push_back(sym);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if (symName == "(dynamic)") continue;
 
                 if (rType == jsType) {
                     // JUMP_SLOT: function import. Name both the GOT slot

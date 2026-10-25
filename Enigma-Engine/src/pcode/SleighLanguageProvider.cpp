@@ -83,17 +83,28 @@ bool SleighLanguageProvider::isLanguageLoaded(const LanguageID& languageId) {
 
 static std::vector<std::filesystem::path> getSleighCandidates() {
     std::vector<std::filesystem::path> candidates;
+    auto addUnique = [&](const std::filesystem::path& p) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(p, ec)) return;
+        auto canonical = std::filesystem::weakly_canonical(p, ec);
+        auto key = ec ? p.lexically_normal() : canonical;
+        for (const auto& existing : candidates) {
+            std::error_code ec2;
+            auto existingKey = std::filesystem::weakly_canonical(existing, ec2);
+            if (ec2) existingKey = existing.lexically_normal();
+            if (existingKey == key) return;
+        }
+        candidates.push_back(key);
+    };
     if (const char* envPath = std::getenv("ENIGMA_SLEIGH_DIR")) {
-        if (*envPath != '\0') candidates.emplace_back(envPath);
+        if (*envPath != '\0') addUnique(envPath);
     }
     if (std::string compilePath = ENIGMA_SLEIGH_DIR; !compilePath.empty()) {
-        candidates.emplace_back(compilePath);
+        addUnique(compilePath);
     }
     std::error_code ec;
     auto cwdSleigh = std::filesystem::current_path(ec) / "sleigh";
-    if (!ec && std::filesystem::is_directory(cwdSleigh, ec)) {
-        candidates.emplace_back(cwdSleigh);
-    }
+    if (!ec) addUnique(cwdSleigh);
     return candidates;
 }
 

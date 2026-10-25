@@ -2,10 +2,9 @@ void __stdcall _start()
 {
     int32_t v_1;
     int32_t v_2;
-    int32_t arg_t9;
     v_1 = sum();
     v_2 = fib(10);
-    **(int32_t **)(arg_t9 + 0x100f0) = v_1 + v_2 + 9;
+    *ptr_0x30240 = v_1 + v_2 + 9;
     do {
                     
     } while( true );

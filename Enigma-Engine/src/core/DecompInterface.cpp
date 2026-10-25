@@ -10,6 +10,7 @@
 #include <ghidra/LanguageID.h>
 #include <ghidra/AddressSet.h>
 #include <ghidra/AnalysisBridge.h>
+#include <ghidra/TrackedRegisterSeeder.h>
 #include <ghidra/TypeDatabase.h>
 #include <ghidra/ProgramDB.h>
 
@@ -312,7 +313,14 @@ struct DecompInterface::Impl {
                     }
                 }
             }
+
         }
+
+        // Seed ABI-mandated tracked registers (MIPS $t9; PowerPC r30/r2).
+        // AnalysisBridge also seeds these for direct bridge users; this call
+        // covers DecompInterface consumers whose Program is not a ProgramDB.
+        TrackedRegisterSeeder::seed(program, arch.get(),
+            [](uint64_t addr) { return addr; });
 
         // Enable calling convention display
         for (auto& mp : arch->protoModels)
@@ -439,6 +447,7 @@ struct DecompInterface::Impl {
 
             try {
                 bridge.bridgeFunctions();
+                bridge.bridgeFlowOverrides();
                 bridge.bridgeTypes();
                 bridge.bridgeImportSignatures();
                 bridge.bridgeNoReturnFlags();
