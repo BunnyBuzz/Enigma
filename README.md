@@ -23,8 +23,9 @@ Traditional reverse-engineering workflows often make the analyst navigate a GUI,
 
 Enigma is an analysis engine, not an LLM and not merely a prompt collection. Its analysis is performed by native tooling; an AI agent provides the reasoning and orchestration around those capabilities.
 
+
 SHA-256 verified identical to the source:
-4D0AC76047ADA91AF8ADECE92D151D691CF6661C384FDB4C690EB0B20D6D6CEB
+"4D0AC76047ADA91AF8ADECE92D151D691CF6661C384FDB4C690EB0B20D6D6CEB"
 
 ## Core capabilities
 
