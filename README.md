@@ -1,156 +1,205 @@
+<div align="center">
+
+# Enigma
+
+### Native Reverse Engineering Engine for AI Agents
+
+**Give AI agents access to real binary-analysis capabilities — not just reverse-engineering prompts.**
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Language: C++17](https://img.shields.io/badge/Language-C%2B%2B17-00599C.svg?logo=cplusplus)](https://isocpp.org/)
+[![Framework: Qt 6](https://img.shields.io/badge/GUI-Qt%206-41CD52.svg?logo=qt)](https://www.qt.io/)
+[![GitHub stars](https://img.shields.io/github/stars/BunnyBuzz/Enigma?style=social)](https://github.com/BunnyBuzz/Enigma/stargazers)
+
+</div>
+
+---
+
+## What is Enigma?
+
+Enigma is a native C++ reverse-engineering engine inspired by Ghidra's analysis pipeline. It provides the core capabilities needed to inspect, disassemble, analyze, and decompile executable binaries, with an architecture intended to make those capabilities usable by AI agents as well as by human analysts.
+
+Traditional reverse-engineering workflows often make the analyst navigate a GUI, inspect individual instructions, follow references, and manually connect findings. Enigma's direction is different: expose the underlying analysis capabilities so an agent can perform focused investigations, follow evidence across a program, and report what it finds — while a human can inspect and direct the work.
+
+Enigma is an analysis engine, not an LLM and not merely a prompt collection. Its analysis is performed by native tooling; an AI agent provides the reasoning and orchestration around those capabilities.
+
+## Core capabilities
+
+### Binary loading
+
+Enigma's loading pipeline supports multiple executable and object-file formats:
+
+- PE
+- ELF 32-bit and 64-bit
+- Mach-O 32-bit and 64-bit, including fat/universal binaries
+- dyld shared-cache support
+- COFF objects and archives
+- Intel HEX and Motorola S-Record
+- Ghidra project import formats: `.gzf`, `.gbf`, and `.rep`
+
+### Disassembly and processor support
+
+- x86 and x86-64
+- ARM and AArch64
+- MIPS, including MIPS16e variants
+- PowerPC
+- Capstone-based instruction decoding with compiled SLEIGH processor specifications
+- P-code generation through the native Ghidra decompiler library
+
+### Program analysis
+
+The engine maintains a program model containing memory, instructions, functions, symbols, references, data types, relocations, and related analysis state.
+
+Analysis capabilities include:
+
+- Function discovery and boundary analysis
+- Symbol and reference analysis
+- Data-type recovery
+- Cross-reference inspection
+- Registered automatic analyzers
+- Function and basic-block analysis
+- Project persistence using FlatBuffers and LMDB, with Git-like commits and branches
+
+### Control-flow analysis
+
+Enigma includes a Qt-independent control-flow model and a Function Graph view.
+
+- Basic-block construction and control-flow edges
+- Conditional and unconditional branch analysis
+- Direct and computed control-flow edge representation
+- Basic-block layout and orthogonal edge routing
+- Function Graph visualization with selectable edges and navigation back to disassembly
+- Synchronization between the graph and the current disassembly location
+
+**Terminology:** a Function Graph represents control flow within a function. It is distinct from a program-wide Call Graph, which represents caller/callee relationships between functions.
+
+### Decompilation
+
+Enigma integrates Ghidra's native C++ decompiler library and provides a native C++ program model around it.
+
+Available functionality includes C-like decompilation, type information, function signatures, symbols, comments, and other program metadata used during analysis.
+
+### Desktop interface
+
 <img width="1920" height="1015" alt="image" src="https://github.com/user-attachments/assets/0423f341-b101-4f81-aef0-7def8af5df61" />
-<img width="1920" height="1020" alt="image" src="https://github.com/user-attachments/assets/fda40f45-f793-4cc4-83fb-b3359d0af933" />
-<img width="1920" height="1014" alt="image" src="https://github.com/user-attachments/assets/5be083d7-5167-44a0-8c39-98075d4f4ab6" />
 
 
+The Qt 6 interface provides a human-inspection environment for the engine:
 
-# Enigma Engine
+- Interactive disassembly
+- Decompiler view
+- Hex view and patching
+- Function Graph
+- Cross-reference exploration
+- Function and symbol navigation
+- Synchronized navigation between analysis views
+- Function and symbol renaming
 
-A native C++ reverse-engineering engine inspired by Ghidra's analysis pipeline.
+The GUI is one way to inspect and direct analysis; it is not the definition of the engine itself.
 
-Enigma removes the JVM dependency and provides a standalone analysis core that can be embedded, extended, and integrated directly with native tools and AI systems.
+## Enigma and AI agents
 
----
+Enigma is being developed around an agent-oriented workflow. The goal is to let an AI agent use reverse-engineering capabilities as concrete operations rather than imitate a human clicking through a desktop application.
 
-## Current State
+An agent-assisted investigation can be organized as follows:
 
-Enigma is under active development and already has a functional end-to-end analysis pipeline.
+1. **Inspect** the target binary and identify its format, architecture, and relevant regions.
+2. **Disassemble** the code and locate functions, symbols, and references.
+3. **Analyze control flow** by examining basic blocks, branches, and function-level graphs.
+4. **Decompile selectively** when higher-level understanding is useful.
+5. **Follow relationships** across references and function calls, verifying each conclusion against available evidence.
+6. **Report findings** with addresses, supporting observations, and clearly marked uncertainty.
 
-### Analysis Engine
-
-* PE, ELF (32/64-bit, LE/BE, stripped binaries via program headers), Mach-O (incl. fat/universal), COFF objects/archives, and Ghidra `.gzf`/`.rep` import path
-* Multi-arch disassembly (x86/x64, ARM32, AArch64, MIPS incl. 16e variants, PowerPC) via Capstone + compiled SLEIGH specs
-* Pcode generation using Ghidra's native decompiler library
-* Function detection audited against Ghidra 12.1.3 headless: 100% instruction-level semantic parity (0 mnemonic / 0 operand mismatches) on all small fixtures across x86-64, ARM, AArch64, MIPS, and PPC; 2856 shared functions / 116k+ semantic matches on a large x86-64 binary
-* C decompilation with per-function parity harness (function-set, naming, success, signature, callee-set, and text-similarity metrics vs Ghidra 12.1.3; zero `halt_baddata` on all fixtures)
-* Type recovery with Windows API signatures (1400+ prototypes), glibc/Linux prototypes, and noreturn tables (Linux/Mac/Windows)
-* Symbols, references, functions, types, and memory model
-* Analysis pipeline with 142 registered analyzers
-* Project persistence using FlatBuffers + LMDB with git-like commits and branches
-
-### GUI
-
-* Interactive disassembly (incl. data-section banners + hex/ASCII dumps)
-* Hex viewer and patching
-* Decompiler (incl. string-literal resolution, equate names, advanced comments)
-* Inline control-flow visualization
-* Function Graph window (zoomable basic-block flowchart) + Call Graph
-* Cross-reference exploration
-* Symbol and function navigation
-* Cross-view synchronization between Disassembly, Decompiler, and Hex
-* Function and symbol renaming
-
-The core pipeline is stable (78/78 CTest suites green), and the current work focuses on expanding feature coverage, improving engine/GUI integration, and closing remaining capability gaps identified during Ghidra 12.1.3 parity testing.
-
----
+The repository includes agent-facing instructions. The exact operations available to an agent depend on the tools and interfaces present in the installed Enigma build. Consult the repository's current agent instructions and each tool's help output; do not assume that a separate MCP server or dynamic plugin interface is available unless it is explicitly provided by the build.
 
 ## Architecture
 
-```text
-Binary (PE / ELF / Mach-O / COFF)
-        │
-        ▼
-Binary Loader
-        │
-        ▼
-Capstone + SLEIGH Disassembly
-        │
-        ▼
-Pcode / Decompiler Engine
-        │
-        ▼
-Analysis Pipeline
-        │
-        ├── Function Detection
-        ├── Type Recovery
-        ├── Symbols
-        ├── References
-        └── Other Analyses
-        │
-        ▼
-Program Model
-        │
-        ├── Functions
-        ├── Symbols
-        ├── Types
-        ├── Memory
-        └── References
-        │
-        ▼
-Storage
-        │
-        ├── FlatBuffers snapshots
-        ├── LMDB index
-        └── Git-like commits / branches
-        │
-        ▼
-Qt GUI
-        │
-        ├── Disassembly
-        ├── Decompiler
-        ├── Hex View
-        ├── CFG / Call Graph
-        └── Explorers
+```mermaid
+flowchart TD
+    A[Executable or project] --> B[Binary loader / project importer]
+    B --> C[Native program model]
+    C --> D[Disassembly and P-code]
+    D --> E[Automatic analysis]
+    E --> F[Functions, symbols, types, references]
+    F --> G[Control-flow model]
+    F --> H[Decompiler]
+    G --> I[Function Graph]
+    C --> J[Project storage]
+    D --> K[Agent-facing tools and workflows]
+    E --> K
+    G --> K
+    H --> K
+    F --> K
+    K --> L[AI agent orchestration]
+    I --> M[Human inspection through Qt GUI]
+    H --> M
+    D --> M
 ```
 
----
+## Original implementation and Ghidra components
 
-## Original Work vs. Ghidra Components
+Enigma uses selected Ghidra technologies where they provide the low-level processor and decompilation functionality required by the project. The surrounding program model, analysis pipeline, storage layer, loaders, and Qt interface are implemented natively in Enigma.
 
-| Component                       | Source                               |
-| ------------------------------- | ------------------------------------ |
-| Decompiler engine               | Ghidra native C++ decompiler library |
-| Sleigh processor specifications | Ghidra                               |
-| Program model                   | Native Enigma C++ implementation     |
-| Type and memory systems         | Native Enigma C++ implementation     |
-| Analysis pipeline               | Native Enigma C++ implementation     |
-| Function detection              | Native Enigma implementation         |
-| Binary loaders                  | Native Enigma implementation (PE/ELF/Mach-O/COFF) |
-| Storage                         | Native Enigma implementation         |
-| GUI                             | Native Qt6 implementation            |
+| Component | Origin |
+|---|---|
+| Native decompiler library | Ghidra C++ decompiler |
+| SLEIGH processor specifications | Ghidra |
+| Program model | Native Enigma C++ implementation |
+| Memory, symbols, references, and data-type systems | Native Enigma C++ implementation |
+| Analysis pipeline | Native Enigma C++ implementation |
+| Binary loading | Native Enigma implementation |
+| Project storage | Native Enigma implementation |
+| Desktop interface | Native Qt 6 implementation |
 
-Enigma uses Ghidra components where they provide the required low-level analysis technology, while the surrounding engine architecture is implemented natively in C++.
-
----
-
-## Building
+## Building from source
 
 ### Requirements
 
-* C++17 or newer
-* CMake 3.16+
-* Ninja (backend) or MSYS Makefiles (GUI), MinGW64 g++ via MSYS2
-* Capstone
-* LMDB
-* SQLite3
-* FlatBuffers + `flatc`
-* zlib
-* Python3 (CLI regression tests)
-* Qt 6 (Widgets, Core, Gui — GUI only; Qt-Advanced-Docking-System is fetched automatically via CMake FetchContent)
+- C++17-compatible compiler
+- CMake 3.16 or newer
+- Ninja
+- MSYS2 / MinGW-w64 on Windows
+- Capstone
+- SQLite3
+- LMDB
+- FlatBuffers and `flatc`
+- zlib
+- nlohmann/json
+- Qt 6 (Widgets, Core, and Gui) for the desktop interface
+- Python 3 for Python-based regression tests
 
 ### Build
 
 ```bash
-git clone https://github.com/adam-040/Enigma.git
+git clone https://github.com/BunnyBuzz/Enigma.git
 cd Enigma/Enigma-Engine
 
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_GUI=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
----
+Dependency availability and compiler configuration may vary by platform. Refer to the repository's build scripts and project documentation for the exact setup used by the current development environment.
 
-## Project Status
+## Project status
 
-Enigma is no longer only a prototype analysis core. The native pipeline, storage layer, analysis systems, and GUI are operational (78/78 CTest suites green).
+Enigma is under active development. The native analysis pipeline, decompiler integration, project storage, and Qt interface are implemented, and the Function Graph has been added and verified in the development workflow.
 
-Current development is focused on **expanding the engine's capabilities and connecting functionality that already exists in the backend to the GUI**, while closing the remaining gaps identified during Ghidra 12.1.3 disassembler/decompiler parity audits (see `PLAN/`).
+At the latest reported verification point for the Function Graph work:
 
----
+- The GUI target built successfully.
+- The CTest suite passed **73/73**.
+- The new Function Graph layout tests passed **34/34**.
+- An offscreen run of the real MainWindow completed the graph, navigation, and synchronization smoke checks.
+
+A pre-existing heap-corruption issue during application teardown was separately identified in the `PatchMemory` ownership path. Functional checks completed before teardown; the shutdown issue should not be interpreted as a Function Graph failure. Check the current issue tracker and `PLAN/PROGRESS.md` for subsequent status.
+
+## Documentation
+
+- `PLAN/` — project plans, progress, and technical design notes
+- Repository agent instructions — guidance for AI agents working with Enigma
+- `Enigma-Engine/` — engine, GUI, tools, and tests
 
 ## License
 
-This project is licensed under the **Apache License 2.0**.
-
-Third-party components used by Enigma remain subject to their respective licenses.
+Enigma is licensed under the Apache License 2.0. Third-party components remain subject to their respective licenses.
