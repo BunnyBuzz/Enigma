@@ -21,6 +21,11 @@ def norm_op(op_str, gh_addrs, base_delta, mnem):
     out = []
     for raw_part in parts:
         p = raw_part.strip().lstrip('#').strip()
+        # AArch64 extend/shift by zero is a no-op; Ghidra folds it into the
+        # addressing mode while Capstone prints it explicitly.
+        p = re.sub(r'\b(LSL|LSR|ASR|UXTW|SXTW|UXTX|SXTX)\s*#?0x?0\b', '', p, flags=re.I)
+        # Ghidra writes the same no-op shift as a suffix glued to the register.
+        p = re.sub(r'([a-z0-9]+)#0x0\b', r'\1', p)
         p = DECORATIONS.sub("", p)
         p = re.sub(r"[\s,\(\)\{\}]+", " ", p).strip().lower()
         is_imm = raw_part.strip().startswith('#')
@@ -38,8 +43,8 @@ def norm_op(op_str, gh_addrs, base_delta, mnem):
                         return f"0x{v + base_delta:x}"
                 return f"0x{v:x}"
             p = re.sub(r"0x[0-9a-fA-F]+", hexn, p)
-            out.append(p)
-    return " ".join(out)
+            out.append(p.strip())
+    return re.sub(r"\s+([,\]\}])", r"\1", " ".join(out)).strip()
 
 def norm_mnemonic(s):
     return (s or "").strip().lower().rstrip(";").lstrip("_")

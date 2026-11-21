@@ -4,7 +4,12 @@
 #include <QDebug>
 #include "MainWindow.h"
 #include <ghidra/DecompInterface.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
@@ -15,7 +20,11 @@
 static FILE* g_crashLog = nullptr;
 static FILE* crashLog() {
     if (!g_crashLog) {
+#ifdef _WIN32
         g_crashLog = fopen("C:\\Users\\pc\\Desktop\\enigma_gui_crash.log", "a");
+#else
+        g_crashLog = fopen("enigma_gui_crash.log", "a");
+#endif
     }
     return g_crashLog;
 }
@@ -23,6 +32,7 @@ static FILE* crashLog() {
 #define CRASHLOG(...) do { FILE* _f = crashLog(); if (_f) { fprintf(_f, __VA_ARGS__); fflush(_f); } } while(0)
 
 static void printStack() {
+#ifdef _WIN32
     void* stack[64];
     USHORT frames = CaptureStackBackTrace(1, 64, stack, NULL);
     CRASHLOG("  Stack (%d frames):\n", frames);
@@ -35,8 +45,18 @@ static void printStack() {
         CRASHLOG("    #%d: 0x%p  [%ls+0x%p]\n", i, stack[i], modName,
             (void*)((char*)stack[i] - (char*)hMod));
     }
+#else
+    void* stack[64];
+    int frames = backtrace(stack, 64);
+    CRASHLOG("  Stack (%d frames):\n", frames);
+    char** symbols = backtrace_symbols(stack, frames);
+    for (int i = 0; i < frames; ++i)
+        CRASHLOG("    #%d: %s\n", i, symbols ? symbols[i] : "?");
+    free(symbols);
+#endif
 }
 
+#ifdef _WIN32
 static LONG WINAPI vehHandler(EXCEPTION_POINTERS* ep) {
     // Only intercept hardware exceptions (access violations, etc.)
     DWORD code = ep->ExceptionRecord->ExceptionCode;
@@ -93,6 +113,8 @@ static LONG WINAPI sehHandler(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_SEARCH; // Let Windows show the error dialog
 }
 
+#endif // _WIN32
+
 static void signalHandler(int sig) {
     CRASHLOG("\n=== SIGNAL %d ===\n", sig);
     printStack();
@@ -120,6 +142,7 @@ static void terminateHandler() {
     std::_Exit(EXIT_FAILURE);
 }
 
+#ifdef _WIN32
 static void purecallHandler() {
     CRASHLOG("\n=== PURE VIRTUAL FUNCTION CALL ===\n");
     printStack();
@@ -128,6 +151,8 @@ static void purecallHandler() {
     g_crashLog = nullptr;
     std::_Exit(EXIT_FAILURE);
 }
+
+#endif // _WIN32
 
 static void qtMessageHandler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg) {
     const char* level = "";
@@ -149,15 +174,18 @@ static void qtMessageHandler(QtMsgType type, const QMessageLogContext& ctx, cons
 
 static void installCrashHandlers() {
     CRASHLOG("=== ENIGMA ENGINE START ===\n");
+#ifdef _WIN32
     CRASHLOG("PID: %lu\n", GetCurrentProcessId());
     SYSTEM_INFO si; GetSystemInfo(&si);
     CRASHLOG("PageSize: %lu, MinAddr: %p, MaxAddr: %p\n",
         si.dwPageSize, si.lpMinimumApplicationAddress, si.lpMaximumApplicationAddress);
-    CRASHLOG("\n");
-
     // VEH fires before any other handler (more reliable than SetUnhandledExceptionFilter)
     AddVectoredExceptionHandler(1, vehHandler);
     SetUnhandledExceptionFilter(sehHandler);
+#else
+    CRASHLOG("PID: %ld\n", static_cast<long>(getpid()));
+#endif
+    CRASHLOG("\n");
     signal(SIGABRT, signalHandler);
     signal(SIGSEGV, signalHandler);
     signal(SIGFPE, signalHandler);

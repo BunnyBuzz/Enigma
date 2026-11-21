@@ -153,14 +153,30 @@ static void extractOperandScalars(const cs_insn* insn, DisassembledInstruction& 
                 // Absolute memory operand such as [0xNNNN]
                 int scalarBits = (bitness >= 64) ? 64 : 32;
                 out.push_back(std::make_unique<Scalar>(scalarBits, static_cast<int64_t>(op.mem.disp)));
+            } else if (!hasBase && hasIndex && op.mem.disp != 0 &&
+                       di.flowType && di.flowType->isComputed()) {
+                // Absolute table base with a scaled index on a computed jump,
+                // e.g. JMP qword ptr [rax*8 + 0x4e3ae0]. The displacement is
+                // the table address and the scale is the entry width. Other
+                // instructions keep skipping [base + idx*scale] displacements
+                // to avoid perturbing type inference with spurious references.
+                int scalarBits = (bitness >= 64) ? 64 : 32;
+                out.push_back(std::make_unique<Scalar>(scalarBits, static_cast<int64_t>(op.mem.disp)));
+                out.push_back(std::make_unique<Scalar>(32, static_cast<int64_t>(op.mem.scale)));
             }
-            // [reg+disp] and [base+index*scale] displacements are offsets, not
-            // addresses, so they are intentionally skipped to avoid false positives.
+            // [base+reg*scale] displacements remain offsets and are skipped.
         }
     }
 }
 
 FlowType* Disassembler::determineFlowType(const std::string& mnemonic, const std::vector<std::string>& operands) {
+    // An indirect jump through memory (JMP [table + idx*scale]) is a computed
+    // jump, not a direct UNCONDITIONAL_JUMP. Classifying it correctly is what
+    // lets ScalarOperandAnalyzer recognise the data table behind it.
+    if ((mnemonic == "jmp" || mnemonic == "jmpq") && !operands.empty() &&
+        operands[0].find('[') != std::string::npos) {
+        return const_cast<FlowType*>(&RefTypes::COMPUTED_JUMP);
+    }
     if (mnemonic == "jmp" || mnemonic == "b" || mnemonic == "br" || mnemonic == "jr" ||
         mnemonic == "bctr" || mnemonic == "b" || mnemonic == "jr.hb" || mnemonic == "jrc" ||
         mnemonic == "jrc.hb" || mnemonic == "jrc" ||

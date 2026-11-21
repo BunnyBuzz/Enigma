@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\BitFieldDataType.h>
+#include <ghidra/BitFieldDataType.h>
 
 namespace ghidra {
 

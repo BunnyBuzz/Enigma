@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\DefaultDataType.h>
+#include <ghidra/DefaultDataType.h>
 
 namespace ghidra {
 

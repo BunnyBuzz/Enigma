@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\VoidDataType.h>
+#include <ghidra/VoidDataType.h>
 
 namespace ghidra {
 

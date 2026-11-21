@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\FunctionDefinitionDataType.h>
+#include <ghidra/FunctionDefinitionDataType.h>
 
 namespace ghidra {
 

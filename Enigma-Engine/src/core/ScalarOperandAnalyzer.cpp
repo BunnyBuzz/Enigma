@@ -16,6 +16,14 @@
 #include <ghidra/BookmarkManager.h>
 #include <ghidra/RelocationTable.h>
 #include <ghidra/Relocation.h>
+#include <ghidra/Disassembler.h>
+#include <ghidra/FunctionIterator.h>
+#include <ghidra/Function.h>
+#include <ghidra/AddressFactory.h>
+#include <algorithm>
+#include <cstdlib>
+#include <unordered_set>
+#include <vector>
 
 namespace ghidra {
 
@@ -87,7 +95,7 @@ bool ScalarOperandAnalyzer::isValidRelocationAddress(Program* program, const Add
 
 bool ScalarOperandAnalyzer::added(Program* program, const AddressSetView& set,
                                    TaskMonitor* monitor, MessageLog& log) {
-    std::cerr << "[INFO] ScalarOperandAnalyzer: starting added(), set size=" << set.getNumAddresses() << std::endl;
+    std::cerr << "[INFO] ScalarOperandAnalyzer: starting added(" << getName() << "), set size=" << set.getNumAddresses() << std::endl;
     int count = 0;
     int nextLogCount = 100;
     int totalInstructions = 0;
@@ -100,7 +108,10 @@ bool ScalarOperandAnalyzer::added(Program* program, const AddressSetView& set,
 
     Listing* listing = program->getListing();
     std::cerr << "[INFO] ScalarOperandAnalyzer: got listing, getting instructions..." << std::endl;
-    auto instructions = listing->getInstructions(set);
+    // `set` can be a stale/default range when ProgramDB has no valid min
+    // address (common for loaders that map memory directly at high VAs).
+    // Analyse every decoded instruction so high-based binaries are covered.
+    auto instructions = listing->getAllInstructions();
     std::cerr << "[INFO] ScalarOperandAnalyzer: got " << instructions.size() << " instructions, starting loop" << std::endl;
     for (Instruction* instr : instructions) {
         if (monitor && monitor->isCancelled()) break;
@@ -217,6 +228,17 @@ bool ScalarOperandAnalyzer::addReference(Program* program, Instruction* instr,
         }
     }
 
+    // Computed jumps through a memory table (e.g. JMP [table + idx*8]) carry
+    // the table base as a scalar; the table itself lives in .rodata, so the
+    // offcut-code test below can never see it. Detect the table from the
+    // instruction's computed-jump flow instead.
+    FlowType* flow = instr->getFlowType();
+    if (flow && flow->isJump() && flow->isComputed()) {
+        auto scalars = instr->getOperandScalars(opIndex);
+        checkForJumpTable(program, instr, opIndex, scalars, addr);
+        return false;
+    }
+
     if (checkOffcutFuncRef(program, addr)) {
         // Could be a jump table - check for it
         auto scalars = instr->getOperandScalars(opIndex);
@@ -252,16 +274,38 @@ void ScalarOperandAnalyzer::checkForJumpTable(Program* program, Instruction* ref
     if (jumpTableVisited_.count(addrKey)) return;
     jumpTableVisited_.insert(addrKey);
 
-    // PHASE 10: only do the first instruction check. Subsequent boundary checks
-    // use a binary search on the sorted body range set (already a member of
-    // FunctionManager). Removed the per-entry getInstructionContaining call
-    // which was triggering O(N log N) rebuilds of the sorted instruction
-    // vector for every entry probe.
-    Instruction* instr = program->getListing()->getInstructionContaining(addr);
-    if (!instr) return;
-
-    FlowType* ftype = instr->getFlowType();
+    // The scalar is the table *base*, which lives in data — there is no
+    // instruction at `addr`. Use the referencing instruction's flow type.
+    FlowType* ftype = refInstr ? refInstr->getFlowType() : nullptr;
     if (!ftype || !(ftype->isJump() && ftype->isComputed())) return;
+
+    // A data table behind an indirect jump is a switch only when the index is
+    // range-checked first. Virtual-call / callback tables have no such branch;
+    // decoding their targets as switch cases invents large amounts of code
+    // that Ghidra never attributes to the enclosing function.
+    {
+        Listing* listing = program->getListing();
+        Address cur = refInstr->getMinAddress();
+        bool bounded = false;
+        for (int i = 0; i < 8 && !bounded; ++i) {
+            Instruction* prev = nullptr;
+            for (int back = 1; back <= 24 && !prev; ++back) {
+                Address before;
+                try { before = cur.subtract(back); } catch (...) { break; }
+                Instruction* cand = listing->getInstructionContaining(before);
+                if (cand && cand->getMinAddress() < cur) prev = cand;
+            }
+            if (!prev) break;
+            cur = prev->getMinAddress();
+            const std::string& mn = prev->getMnemonicString();
+            if (mn == "ja" || mn == "jae" || mn == "jb" || mn == "jbe" ||
+                mn == "jg" || mn == "jge" || mn == "jl" || mn == "jle" ||
+                mn == "jhi" || mn == "jhs" || mn == "jlo" || mn == "jls") {
+                bounded = true;
+            }
+        }
+        if (!bounded) return;
+    }
 
     // Figure out the entry size from the scalar
     long entryLen = 0;
@@ -296,8 +340,6 @@ void ScalarOperandAnalyzer::checkForJumpTable(Program* program, Instruction* ref
         return false;
     };
 
-    SymbolTable* symTable = program->getSymbolTable();
-    ReferenceManager* refMgr = program->getReferenceManager();
     Memory* memory = program->getMemory();
 
     auto readTableEntry = [&](const Address& entryAddr) -> Address {
@@ -347,6 +389,7 @@ void ScalarOperandAnalyzer::checkForJumpTable(Program* program, Instruction* ref
     // Scan forward entries (PHASE 10: use function-range check instead of
     // getInstructionContaining to avoid O(N log N) rebuilds).
     Address scanAddr = addr;
+    std::vector<Address> tableTargets;
     int tableCount = 0;
     while (tableCount < MAX_TABLE_ENTRIES) {
         if (checkCancelled()) {
@@ -361,13 +404,12 @@ void ScalarOperandAnalyzer::checkForJumpTable(Program* program, Instruction* ref
         }
         Address target = readTableEntry(scanAddr);
         if (!target.isValid()) break;
+        tableTargets.push_back(target);
 
-        symTable->createLabel(target, "switch_case_" + std::to_string(tableCount),
-                              SourceType::ANALYSIS);
-        if (refInstr) {
-            refMgr->addMemoryReference(refInstr->getAddress(), target,
-                                       &RefTypes::DATA, SourceType::ANALYSIS, opIndex);
-        }
+        // Deliberately no label/reference here: a DATA reference from a
+        // computed jump makes the decompiler infer code-pointer types for
+        // unrelated parameters. Decoding the case targets below is enough for
+        // listing/function-body parity.
         ++tableCount;
         ++jumpTableIterations_;
         try {
@@ -404,19 +446,88 @@ void ScalarOperandAnalyzer::checkForJumpTable(Program* program, Instruction* ref
         }
         Address target = readTableEntry(prevAddr);
         if (!target.isValid()) break;
+        tableTargets.push_back(target);
 
-        symTable->createLabel(target, "switch_case_neg" + std::to_string(negCount),
-                              SourceType::ANALYSIS);
-        if (refInstr) {
-            refMgr->addMemoryReference(refInstr->getAddress(), target,
-                                       &RefTypes::DATA, SourceType::ANALYSIS, opIndex);
-        }
         ++negCount;
         ++jumpTableIterations_;
         try {
             prevAddr = prevAddr.subtract(entryLen);
         } catch (...) {
             break;
+        }
+    }
+
+    // Labels/references alone do not put the case code in the listing; the
+    // body finalizer can only extend a function over decoded instructions.
+    if (!tableTargets.empty()) decodeJumpTableTargets(program, tableTargets);
+}
+
+void ScalarOperandAnalyzer::decodeJumpTableTargets(Program* program,
+                                                    const std::vector<Address>& targets) {
+    Listing* listing = program->getListing();
+    Memory* memory = program->getMemory();
+    FunctionManager* funcMgr = program->getFunctionManager();
+    if (!listing || !memory) return;
+
+    const std::string lid = program->getLanguageID().getIdAsString();
+    std::string arch = "x86";
+    if (lid.find("AARCH64") != std::string::npos || lid.find("ARM64") != std::string::npos)
+        arch = "aarch64";
+    else if (lid.find("ARM") != std::string::npos)
+        arch = "ARM";
+    else if (lid.find("MIPS") != std::string::npos)
+        arch = "MIPS";
+    else if (lid.find("PPC") != std::string::npos || lid.find("PowerPC") != std::string::npos)
+        arch = "PPC";
+    int bitness = (lid.find("64") != std::string::npos) ? 64 : 32;
+    bool bigEndian = (lid.find("BE") != std::string::npos);
+    auto disassembler = createDisassembler(arch, bitness, bigEndian);
+    if (!disassembler) return;
+
+    std::vector<uint64_t> entries;
+    if (funcMgr) {
+        FunctionIterator fit = funcMgr->getFunctions(true);
+        while (fit.hasNext()) {
+            Function* f = fit.next();
+            if (f && f->getEntryPoint().isValid())
+                entries.push_back(static_cast<uint64_t>(f->getEntryPoint().getOffset()));
+        }
+        std::sort(entries.begin(), entries.end());
+    }
+
+    const AddressSpace* space = program->getAddressFactory()
+                                    ? program->getAddressFactory()->getDefaultAddressSpace()
+                                    : nullptr;
+    if (!space) return;
+
+    static constexpr int kMaxCaseInstructions = 128;
+    uint8_t buf[16];
+    for (const Address& target : targets) {
+        if (currentMonitor_ && currentMonitor_->isCancelled()) return;
+        MemoryBlock* block = memory->getBlock(target);
+        if (!block || !block->isExecute()) continue;
+        uint64_t cur = static_cast<uint64_t>(target.getOffset());
+        for (int i = 0; i < kMaxCaseInstructions; ++i) {
+            Address curAddr(const_cast<AddressSpace*>(space), static_cast<int64_t>(cur));
+            if (listing->getInstructionAt(curAddr)) break;
+            // Never cross into a different function entry.
+            auto next = std::upper_bound(entries.begin(), entries.end(), cur);
+            if (next != entries.end() && cur + 4 > *next) break;
+            int got = memory->getBytes(curAddr, buf, static_cast<int>(sizeof(buf)));
+            if (got <= 0) break;
+            std::vector<uint8_t> bytes(buf, buf + got);
+            DisassembledInstruction di = disassembler->disassembleOne(bytes, cur);
+            if (di.length <= 0) break;
+            auto* inst = new Instruction(program, curAddr, di.mnemonic, di.length, di.flowType);
+            for (size_t oi = 0; oi < di.operands.size(); ++oi)
+                inst->setOperand(static_cast<int>(oi), di.operands[oi]);
+            for (size_t oi = 0; oi < di.operandScalars.size(); ++oi)
+                for (auto& sc : di.operandScalars[oi])
+                    if (sc) inst->addOperandScalar(static_cast<int>(oi), sc.release());
+            listing->addInstruction(inst);
+            FlowType* ft = di.flowType;
+            if (ft && (ft->isTerminal() || (ft->isJump() && !ft->isConditional()))) break;
+            cur += static_cast<uint64_t>(di.length);
         }
     }
 }

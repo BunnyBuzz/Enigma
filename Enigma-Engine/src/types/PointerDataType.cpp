@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\PointerDataType.h>
+#include <ghidra/PointerDataType.h>
 
 namespace ghidra {
 

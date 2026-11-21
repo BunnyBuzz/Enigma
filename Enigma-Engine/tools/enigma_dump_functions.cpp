@@ -36,6 +36,7 @@
 #include <ghidra/PEExceptionAnalyzer.h>
 #include <ghidra/ImportThunkAnalyzer.h>
 #include <ghidra/ScalarOperandAnalyzer.h>
+#include <ghidra/ElfScalarOperandAnalyzer.h>
 #include <ghidra/OperandReferenceAnalyzer.h>
 #include <ghidra/DataOperandReferenceAnalyzer.h>
 #include <ghidra/ConstantPropagationAnalyzer.h>
@@ -124,6 +125,7 @@ int main(int argc, char* argv[]) {
     analysisMgr->registerAnalyzer(std::make_unique<ghidra::PEExceptionAnalyzer>());
     analysisMgr->registerAnalyzer(std::make_unique<DataRefFunctionAnalyzer>());
     analysisMgr->registerAnalyzer(std::make_unique<ScalarOperandAnalyzer>());
+    analysisMgr->registerAnalyzer(std::make_unique<ElfScalarOperandAnalyzer>());
     analysisMgr->registerAnalyzer(std::make_unique<OperandReferenceAnalyzer>());
     analysisMgr->registerAnalyzer(std::make_unique<DataOperandReferenceAnalyzer>());
     analysisMgr->registerAnalyzer(std::make_unique<ConstantPropagationAnalyzer>());

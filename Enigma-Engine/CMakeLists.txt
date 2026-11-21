@@ -38,15 +38,20 @@ if(NOT ZLIB_FOUND)
 endif()
 
 # nlohmann/json (header-only JSON library for ingest tools)
-include(FetchContent)
-FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(nlohmann_json)
-message(STATUS "nlohmann/json fetched")
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+    message(STATUS "nlohmann/json fetched")
+else()
+    message(STATUS "nlohmann/json found (system)")
+endif()
 
 # FlatBuffers
 find_path(FLATBUFFERS_INCLUDE_DIR NAMES flatbuffers/flatbuffers.h HINTS "$ENV{MSYSTEM_PREFIX}/include" "${MSYS2_MINGW64_ROOT}/include")
@@ -105,7 +110,11 @@ add_library(enigma_engine ${SOURCES} ${HEADERS})
 add_dependencies(enigma_engine flatbuffers_schemas)
 target_include_directories(enigma_engine PUBLIC ${CMAKE_SOURCE_DIR}/src/include ${FBS_OUTPUT_DIR})
 target_include_directories(enigma_engine PRIVATE ${CAPSTONE_INCLUDE_DIR} ${SQLITE3_INCLUDE_DIR} ${LMDB_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/src/decompiler)
-target_link_libraries(enigma_engine PRIVATE ${CAPSTONE_LIBRARY} ${SQLITE3_LIBRARY} ${LMDB_LIBRARY} ${FLATBUFFERS_LIBRARY} decompiler dbghelp nlohmann_json::nlohmann_json)
+set(PLATFORM_SYSTEM_LIBS "")
+if(WIN32)
+    list(APPEND PLATFORM_SYSTEM_LIBS dbghelp)
+endif()
+target_link_libraries(enigma_engine PRIVATE ${CAPSTONE_LIBRARY} ${SQLITE3_LIBRARY} ${LMDB_LIBRARY} ${FLATBUFFERS_LIBRARY} decompiler ${PLATFORM_SYSTEM_LIBS} nlohmann_json::nlohmann_json)
 if(ZLIB_FOUND)
     target_link_libraries(enigma_engine PRIVATE ZLIB::ZLIB)
 else()
@@ -136,7 +145,11 @@ if(ENABLE_GUI AND Qt6_FOUND)
     file(GLOB_RECURSE GUI_HEADERS CONFIGURE_DEPENDS "src/gui/*.h")
     add_executable(enigma_gui ${GUI_SOURCES} ${GUI_HEADERS} src/gui/resources.qrc)
     target_include_directories(enigma_gui PRIVATE ${CMAKE_SOURCE_DIR}/src/include)
-    target_link_libraries(enigma_gui PRIVATE enigma_engine Qt6::Widgets Qt6::Concurrent Qt6::Svg bcrypt)
+    set(GUI_PLATFORM_LIBS "")
+    if(WIN32)
+        list(APPEND GUI_PLATFORM_LIBS bcrypt)
+    endif()
+    target_link_libraries(enigma_gui PRIVATE enigma_engine Qt6::Widgets Qt6::Concurrent Qt6::Svg ${GUI_PLATFORM_LIBS})
     target_compile_definitions(enigma_gui PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
 
     # Add the icons directory as a resource search path
@@ -521,4 +534,49 @@ target_include_directories(enigma_rebuild_fks_index PRIVATE ${FBS_OUTPUT_DIR})
 target_compile_definitions(enigma_rebuild_fks_index PRIVATE ENIGMA_SLEIGH_DIR="${ENIGMA_SLEIGH_DIR}")
 add_dependencies(enigma_rebuild_fks_index flatbuffers_schemas)
 enigma_apply_warning_policy(enigma_rebuild_fks_index)
+
+# --- Linux host portability for tests that assume Windows artifacts ---------
+# Several self-loading tests expect their own executable to be a PE, and the
+# PLT/GOT test expects section-header-stripped corpus copies under
+# test_binaries/. Both are produced by the Windows toolchain/corpus setup.
+set(ENIGMA_TEST_PE "" CACHE FILEPATH "PE binary used by self-loading tests on non-Windows hosts")
+if(NOT WIN32 AND NOT ENIGMA_TEST_PE)
+    foreach(candidate
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/pe_test.bin"
+        "$ENV{GHIDRA_DIR}/docs/GhidraClass/ExerciseFiles/WinhelloCPP/WinHelloCPP.exe"
+        "/opt/ghidra/docs/GhidraClass/ExerciseFiles/WinhelloCPP/WinHelloCPP.exe"
+        "/opt/ghidra/docs/GhidraClass/ExerciseFiles/VersionTracking/WallaceSrc.exe")
+        if(EXISTS "${candidate}")
+            set(ENIGMA_TEST_PE "${candidate}" CACHE FILEPATH "PE binary used by self-loading tests" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+if(ENIGMA_TEST_PE)
+    set_tests_properties(
+        enigma_test_decompiler enigma_test_loader enigma_test_headless_suite
+        enigma_test_analyzer_integration enigma_test_decomp_interface
+        PROPERTIES ENVIRONMENT "ENIGMA_TEST_BINARY=${ENIGMA_TEST_PE}")
+    message(STATUS "PE self-tests use: ${ENIGMA_TEST_PE}")
+endif()
+
+find_program(LLVM_STRIP_EXECUTABLE NAMES llvm-strip)
+if(LLVM_STRIP_EXECUTABLE)
+    set(STRIPPED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test_binaries")
+    file(MAKE_DIRECTORY "${STRIPPED_DIR}")
+    foreach(base x64_dyn aarch64_pie_dyn)
+        set(src_elf "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/${base}.elf")
+        set(dst_elf "${STRIPPED_DIR}/${base}_stripped.elf")
+        if(base STREQUAL "aarch64_pie_dyn")
+            set(dst_elf "${STRIPPED_DIR}/aarch64_dyn_stripped.elf")
+        endif()
+        add_custom_command(OUTPUT "${dst_elf}"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${src_elf}" "${dst_elf}"
+            COMMAND "${LLVM_STRIP_EXECUTABLE}" --strip-all "${dst_elf}"
+            DEPENDS "${src_elf}" VERBATIM)
+        list(APPEND STRIPPED_FIXTURES "${dst_elf}")
+    endforeach()
+    add_custom_target(stripped_fixtures DEPENDS ${STRIPPED_FIXTURES})
+    add_dependencies(enigma_test_elf_pltgot stripped_fixtures)
+endif()
 

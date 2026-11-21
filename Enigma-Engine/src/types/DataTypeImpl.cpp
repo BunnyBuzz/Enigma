@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\DataTypeImpl.h>
+#include <ghidra/DataTypeImpl.h>
 
 namespace ghidra {
 

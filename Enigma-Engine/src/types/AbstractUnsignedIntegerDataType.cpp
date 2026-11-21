@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\AbstractUnsignedIntegerDataType.h>
+#include <ghidra/AbstractUnsignedIntegerDataType.h>
 
 namespace ghidra {
 

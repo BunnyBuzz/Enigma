@@ -1984,15 +1984,15 @@ int main() {
     TEST("Math.clamp at max", ghidra::MathUtilities::clamp(10, 0, 10) == 10);
 
     // unsignedMin
-    TEST("Math.unsignedMin64 5<10", ghidra::MathUtilities::unsignedMin(5ULL, 10ULL) == 5);
-    TEST("Math.unsignedMin64 10<5", ghidra::MathUtilities::unsignedMin(10ULL, 5ULL) == 5);
-    TEST("Math.unsignedMin64 neg<pos", ghidra::MathUtilities::unsignedMin(static_cast<uint64_t>(-1), 5ULL) == 5);
+    TEST("Math.unsignedMin64 5<10", ghidra::MathUtilities::unsignedMin(uint64_t(5), uint64_t(10)) == 5);
+    TEST("Math.unsignedMin64 10<5", ghidra::MathUtilities::unsignedMin(uint64_t(10), uint64_t(5)) == 5);
+    TEST("Math.unsignedMin64 neg<pos", ghidra::MathUtilities::unsignedMin(static_cast<uint64_t>(-1), uint64_t(5)) == 5);
     TEST("Math.unsignedMin32 5<10", ghidra::MathUtilities::unsignedMin(5U, 10U) == 5);
 
     // unsignedMax
-    TEST("Math.unsignedMax64 5<10", ghidra::MathUtilities::unsignedMax(5ULL, 10ULL) == 10);
-    TEST("Math.unsignedMax64 10<5", ghidra::MathUtilities::unsignedMax(10ULL, 5ULL) == 10);
-    TEST("Math.unsignedMax64 neg>pos", ghidra::MathUtilities::unsignedMax(static_cast<uint64_t>(-1), 5ULL) == static_cast<uint64_t>(-1));
+    TEST("Math.unsignedMax64 5<10", ghidra::MathUtilities::unsignedMax(uint64_t(5), uint64_t(10)) == 10);
+    TEST("Math.unsignedMax64 10<5", ghidra::MathUtilities::unsignedMax(uint64_t(10), uint64_t(5)) == 10);
+    TEST("Math.unsignedMax64 neg>pos", ghidra::MathUtilities::unsignedMax(static_cast<uint64_t>(-1), uint64_t(5)) == static_cast<uint64_t>(-1));
     TEST("Math.unsignedMax32 5<10", ghidra::MathUtilities::unsignedMax(5U, 10U) == 10);
 
     // === Wave 35: SegmentMismatchException + AlignmentType + ArchiveType + AddressFactory + AddressRangeSplitter ===

@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\EnumDataType.h>
+#include <ghidra/EnumDataType.h>
 
 namespace ghidra {
 

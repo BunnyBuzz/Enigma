@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\BooleanDataType.h>
+#include <ghidra/BooleanDataType.h>
 
 namespace ghidra {
 

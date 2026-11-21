@@ -32,6 +32,7 @@ protected:
 private:
     void checkForJumpTable(Program* program, Instruction* refInstr, int opIndex,
                             const std::vector<Scalar*>& opObjects, const Address& addr);
+    void decodeJumpTableTargets(Program* program, const std::vector<Address>& targets);
 
     TaskMonitor* currentMonitor_ = nullptr;
     std::unordered_set<uint64_t> jumpTableVisited_;

@@ -19,8 +19,15 @@ bool ElfScalarOperandAnalyzer::canAnalyze(Program* program) const {
 }
 
 bool ElfScalarOperandAnalyzer::getDefaultEnablement(Program* program) const {
+
+    // The base class disables itself for ELF (it assumes scalars are absolute
+    // addresses, which breaks on zero-based shared objects). This analyzer is
+    // the ELF counterpart and must still run: among other things it is the
+    // only path that discovers data-driven jump tables in ELF binaries.
     if (!program || program->getExecutableFormat() != "ELF") return false;
-    return ScalarOperandAnalyzer::getDefaultEnablement(program);
+    return program->getAddressFactory() &&
+           program->getAddressFactory()->getDefaultAddressSpace() &&
+           program->getAddressFactory()->getDefaultAddressSpace()->getSize() >= 32;
 }
 
 bool ElfScalarOperandAnalyzer::addReference(Program* program, Instruction* instr,

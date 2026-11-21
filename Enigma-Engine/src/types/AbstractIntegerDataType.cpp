@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\AbstractIntegerDataType.h>
+#include <ghidra/AbstractIntegerDataType.h>
 
 namespace ghidra {
 

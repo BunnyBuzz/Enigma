@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\ArrayDataType.h>
+#include <ghidra/ArrayDataType.h>
 
 namespace ghidra {
 

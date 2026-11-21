@@ -6,10 +6,11 @@ ENGINE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def find_exe():
     for d in ("build", "build-cmake"):
-        p = os.path.join(ENGINE_ROOT, d, "enigma_decompile_full.exe")
-        if os.path.exists(p):
-            return p
-    print("Error: enigma_decompile_full.exe not found in build/ or build-cmake/")
+        for name in ("enigma_decompile_full.exe", "enigma_decompile_full"):
+            p = os.path.join(ENGINE_ROOT, d, name)
+            if os.path.exists(p):
+                return p
+    print("Error: enigma_decompile_full not found in build/ or build-cmake/")
     sys.exit(1)
 
 EXE_PATH = find_exe()

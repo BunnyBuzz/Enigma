@@ -7,7 +7,7 @@
  * 
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
-#include <ghidra\StructureDataType.h>
+#include <ghidra/StructureDataType.h>
 
 namespace ghidra {
 

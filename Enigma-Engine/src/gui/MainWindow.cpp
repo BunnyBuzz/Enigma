@@ -53,7 +53,13 @@
 #include <ghidra/Disassembler.h>
 #include <sstream>
 #include <iomanip>
+#ifdef _WIN32
 #include <windows.h>   // GetCurrentThreadId
+#define ENIGMA_THREAD_ID() (static_cast<unsigned long>(GetCurrentThreadId()))
+#else
+#include <pthread.h>
+#define ENIGMA_THREAD_ID() (static_cast<unsigned long>(pthread_self()))
+#endif
 #include <chrono>       // timestamps
 #include <QInputDialog>
 #include <QDialog>
@@ -1170,7 +1176,7 @@ static FILE* logFile() {
     }
     return g_log;
 }
-#define DBG(...) do { FILE* _dbf = logFile(); if(_dbf){fprintf(_dbf, "[%+6lld|%04lu] ", nowMs()-g_t0, (unsigned long)GetCurrentThreadId());fprintf(_dbf, __VA_ARGS__);fflush(_dbf);} } while(0)
+#define DBG(...) do { FILE* _dbf = logFile(); if(_dbf){fprintf(_dbf, "[%+6lld|%04lu] ", nowMs()-g_t0, ENIGMA_THREAD_ID());fprintf(_dbf, __VA_ARGS__);fflush(_dbf);} } while(0)
 #define NAVLOG(...) DBG("[NAV] " __VA_ARGS__)
 #define GUARD_ENTER(fn) DBG(">> %s\n", fn)
 #define GUARD_EXIT(fn)  DBG("<< %s\n", fn)
