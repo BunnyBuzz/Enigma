@@ -21,12 +21,17 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QApplication>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QFileInfo>
 #include <QToolButton>
+#include <QStyle>
 #include <QSvgRenderer>
 #include <QPainter>
 #include <QPixmap>
 #include <QCheckBox>
+#include <QEvent>
+#include <QShowEvent>
 #include <QtConcurrent>
 #include <ghidra/DecompInterface.h>
 #include <ghidra/ProgramDB.h>
@@ -117,6 +122,79 @@ static std::string resolveFksDir() {
     return "";
 }
 
+namespace {
+
+void upgradeFloatingDockWindow(QDockWidget* dock) {
+    if (!dock || !dock->isFloating()) return;
+    if ((dock->windowFlags() & Qt::WindowType_Mask) != Qt::Window) {
+        const QPoint oldPos = dock->pos();
+        dock->setWindowFlags(Qt::Window |
+                             Qt::WindowTitleHint |
+                             Qt::WindowSystemMenuHint |
+                             Qt::WindowMinimizeButtonHint |
+                             Qt::WindowMaximizeButtonHint |
+                             Qt::WindowCloseButtonHint);
+        const bool isExplorer = (dock->objectName() == QLatin1String("EXPLORER"));
+        const int minW = isExplorer ? 320 : 640;
+        const int minH = isExplorer ? 480 : 460;
+        if (dock->width() < minW || dock->height() < minH) {
+            dock->resize(std::max(dock->width(), minW), std::max(dock->height(), minH));
+        }
+        const QRect avail = QGuiApplication::primaryScreen()
+                                ? QGuiApplication::primaryScreen()->availableGeometry()
+                                : QRect(0, 0, 1280, 800);
+        int nx = std::clamp(oldPos.x(), avail.left(),
+                            std::max(avail.left(), avail.right() - dock->width()));
+        int ny = std::clamp(oldPos.y(), avail.top(),
+                            std::max(avail.top(), avail.bottom() - dock->height()));
+        if (oldPos.isNull()) {
+            nx = avail.left() + (avail.width() - dock->width()) / 2;
+            ny = avail.top() + (avail.height() - dock->height()) / 2;
+        }
+        dock->move(nx, ny);
+        dock->show();
+    }
+    dock->raise();
+    dock->activateWindow();
+}
+
+class FloatingDockFilter : public QObject {
+public:
+    explicit FloatingDockFilter(QDockWidget* dock)
+        : QObject(dock), dock_(dock) {}
+
+    void scheduleUpgrade() {
+        pending_ = true;
+        if (QApplication::mouseButtons() == Qt::NoButton) {
+            QTimer::singleShot(0, this, [this]() { tryUpgrade(); });
+        }
+    }
+
+    void cancel() { pending_ = false; }
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override {
+        if (pending_ && (ev->type() == QEvent::MouseButtonRelease ||
+                         ev->type() == QEvent::NonClientAreaMouseButtonRelease)) {
+            QTimer::singleShot(0, this, [this]() { tryUpgrade(); });
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+
+private:
+    void tryUpgrade() {
+        if (!pending_) return;
+        if (QApplication::mouseButtons() != Qt::NoButton) return;
+        pending_ = false;
+        upgradeFloatingDockWindow(dock_);
+    }
+
+    QDockWidget* dock_ = nullptr;
+    bool pending_ = false;
+};
+
+} // namespace
+
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -127,6 +205,7 @@ MainWindow::MainWindow(QWidget* parent)
     setStyleSheet(
         "QMainWindow {"
         "    background-color: #f0f0f0;"
+        "    color: #202020;"
         "}"
         "QMainWindow::separator {"
         "    background-color: #d0d0d0;"
@@ -135,9 +214,38 @@ MainWindow::MainWindow(QWidget* parent)
         "    margin: 0px;"
         "    padding: 0px;"
         "}"
+        "QMenuBar {"
+        "    background-color: #f0f0f0;"
+        "    color: #202020;"
+        "}"
+        "QMenuBar::item {"
+        "    background-color: transparent;"
+        "    color: #202020;"
+        "}"
+        "QMenuBar::item:selected {"
+        "    background-color: #e0e0e0;"
+        "    color: #000000;"
+        "}"
+        "QMenu {"
+        "    background-color: #ffffff;"
+        "    color: #202020;"
+        "    border: 1px solid #d0d0d0;"
+        "}"
+        "QMenu::item:selected {"
+        "    background-color: #0078d4;"
+        "    color: #ffffff;"
+        "}"
         "QDockWidget {"
         "    border: none;"
         "    background-color: #ffffff;"
+        "    color: #202020;"
+        "}"
+        "QDockWidget::title {"
+        "    background-color: #f0f0f0;"
+        "    color: #333333;"
+        "    padding: 3px 6px;"
+        "    font-weight: bold;"
+        "    font-size: 11px;"
         "}"
         "QTreeView, QHeaderView, QAbstractScrollArea, QTabWidget::pane, QTabBar {"
         "    border: none;"
@@ -226,7 +334,31 @@ MainWindow::MainWindow(QWidget* parent)
     });
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    delete graphWindow_;
+    graphWindow_ = nullptr;
+    delete structureEditor_;
+    structureEditor_ = nullptr;
+}
+
+void MainWindow::applyInitialDockProportions() {
+    if (!explorerDock_ || !disasmDock_ || !decompDock_) return;
+    const int totalW = std::max(width(), 1200);
+    const int expW = std::clamp(totalW / 7, 200, 260);
+    const int remW = std::max(400, totalW - expW);
+    const int disW = remW * 55 / 100;
+    const int decW = remW - disW;
+    resizeDocks({explorerDock_, disasmDock_, decompDock_},
+                {expW, disW, decW}, Qt::Horizontal);
+}
+
+void MainWindow::showEvent(QShowEvent* event) {
+    QMainWindow::showEvent(event);
+    if (!initialLayoutApplied_) {
+        initialLayoutApplied_ = true;
+        QTimer::singleShot(0, this, &MainWindow::applyInitialDockProportions);
+    }
+}
 
 void MainWindow::createMenuBar() {
     auto* file = menuBar()->addMenu(tr("&File"));
@@ -413,7 +545,7 @@ void MainWindow::createMenuBar() {
 
     auto* listAct = patchMenu->addAction(tr("&Show Patch List"));
     listAct->setCheckable(true);
-    listAct->setChecked(true);
+    listAct->setChecked(false);
     showPatchListAction_ = listAct;
     connect(listAct, &QAction::toggled, this, [this](bool show) {
         if (patchListDock_) patchListDock_->setVisible(show);
@@ -465,7 +597,16 @@ void MainWindow::createDockWidgets() {
         dock->setObjectName(title);
         dock->setWidget(widget);
         if (closable) {
-            dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+            dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable |
+                              QDockWidget::DockWidgetFloatable);
+            auto* floatFilter = new FloatingDockFilter(dock);
+            qApp->installEventFilter(floatFilter);
+            connect(dock, &QDockWidget::topLevelChanged, this, [floatFilter](bool floating) {
+                if (floating)
+                    floatFilter->scheduleUpgrade();
+                else
+                    floatFilter->cancel();
+            });
         } else {
             dock->setFeatures(QDockWidget::DockWidgetMovable);
         }
@@ -518,10 +659,12 @@ void MainWindow::createDockWidgets() {
 
     // Custom title bar: [EXPLORER label] ... [folder toggle button]
     auto* explorerTitleBar = new QWidget(this);
+    explorerTitleBar->setStyleSheet("background-color: #f0f0f0;");
     auto* explorerTitleLayout = new QHBoxLayout(explorerTitleBar);
     explorerTitleLayout->setContentsMargins(6, 0, 4, 0);
     explorerTitleLayout->setSpacing(4);
     auto* explorerTitleLabel = new QLabel(tr("EXPLORER"), explorerTitleBar);
+    explorerTitleLabel->setStyleSheet("color: #333333; font-weight: bold; font-size: 11px;");
     explorerTitleLayout->addWidget(explorerTitleLabel);
     explorerTitleLayout->addStretch();
     auto* explorerTitleBtn = new QToolButton(explorerTitleBar);
@@ -578,13 +721,89 @@ void MainWindow::createDockWidgets() {
     hexDock_      = createDock("HEX", hexView_);
     consoleDock_  = createDock("CONSOLE", console_);
     graphView_ = new FunctionGraphView(this);
-    graphDock_ = createDock("FUNCTION GRAPH", graphView_);
+    {
+        auto* graphContainer = new QWidget;
+        auto* gvLayout = new QVBoxLayout(graphContainer);
+        gvLayout->setContentsMargins(0, 0, 0, 0);
+        gvLayout->setSpacing(0);
+
+        auto* bar = new QWidget(graphContainer);
+        bar->setFixedHeight(26);
+        bar->setStyleSheet(
+            "QWidget { background-color: #f5f5f5; border-bottom: 1px solid #dcdcdc; }"
+            "QToolButton { border: 1px solid transparent; border-radius: 3px; padding: 2px 6px; color: #202020; font-size: 11px; }"
+            "QToolButton:hover { background-color: #e4e4e4; border-color: #c8c8c8; }"
+            "QLabel { color: #505050; font-size: 11px; border: none; }");
+        auto* hb = new QHBoxLayout(bar);
+        hb->setContentsMargins(4, 2, 4, 2);
+        hb->setSpacing(2);
+
+        auto makeGraphBtn = [&](const QString& text, const QString& tip) {
+            auto* b = new QToolButton(bar);
+            b->setText(text);
+            b->setToolTip(tip);
+            b->setFocusPolicy(Qt::NoFocus);
+            return b;
+        };
+        auto* zoomInBtn  = makeGraphBtn("+", tr("Zoom In (Ctrl+Wheel / +)"));
+        auto* zoomOutBtn = makeGraphBtn("-", tr("Zoom Out (Ctrl+Wheel / -)"));
+        auto* zoomFitBtn = makeGraphBtn(tr("Fit"), tr("Fit Graph to View (0)"));
+        auto* zoom100Btn = makeGraphBtn(QStringLiteral("100%"), tr("Reset Zoom to 100% (1)"));
+        auto* zoomPctLbl = new QLabel(QStringLiteral("100%"), bar);
+        zoomPctLbl->setMinimumWidth(38);
+        zoomPctLbl->setAlignment(Qt::AlignCenter);
+
+        auto* detachBtn  = makeGraphBtn(tr("New Window"), tr("Open Function Graph in Standalone Window"));
+
+        connect(zoomInBtn,  &QToolButton::clicked, graphView_, &FunctionGraphView::zoomIn);
+        connect(zoomOutBtn, &QToolButton::clicked, graphView_, &FunctionGraphView::zoomOut);
+        connect(zoomFitBtn, &QToolButton::clicked, graphView_, &FunctionGraphView::zoomFit);
+        connect(zoom100Btn, &QToolButton::clicked, graphView_, &FunctionGraphView::zoomReset);
+        connect(graphView_, &FunctionGraphView::zoomChanged, bar, [zoomPctLbl](double z) {
+            zoomPctLbl->setText(QStringLiteral("%1%").arg(qRound(z * 100.0)));
+        });
+        connect(detachBtn, &QToolButton::clicked, this, [this]() {
+            if (showGraphWindowAction_) showGraphWindowAction_->trigger();
+        });
+
+        hb->addWidget(zoomInBtn);
+        hb->addWidget(zoomOutBtn);
+        hb->addWidget(zoomFitBtn);
+        hb->addWidget(zoom100Btn);
+        hb->addWidget(zoomPctLbl);
+        hb->addStretch();
+        hb->addWidget(detachBtn);
+
+        gvLayout->addWidget(bar);
+        gvLayout->addWidget(graphView_, 1);
+        graphDock_ = createDock("FUNCTION GRAPH", graphContainer);
+    }
+
+    graphWindow_ = new FunctionGraphWindow(nullptr);
+    graphWindow_->hide();
+
+    auto syncFromGraphClick = [this](uint64_t addr, QObject* origin) {
+        if (addr == 0 || !program_) return;
+        statusAddr_->setText(QString("0x%1").arg(addr, 0, 16));
+        if (disasmView_) disasmView_->seek(addr);
+        if (decompView_) decompView_->seek(addr);
+        if (hexView_ && hexView_->containsAddress(addr)) hexView_->seek(addr);
+        if (origin != graphView_ && graphView_) graphView_->setCurrentAddress(addr);
+        if (origin != graphWindow_ && graphWindow_) graphWindow_->setCurrentAddress(addr);
+    };
+
+    connect(graphView_, &FunctionGraphView::addressSelected, this,
+            [this, syncFromGraphClick](uint64_t addr) {
+                syncFromGraphClick(addr, graphView_);
+            });
     connect(graphView_, &FunctionGraphView::navigateRequested, this,
             [this](uint64_t addr) {
                 if (addr != 0) navigateTo(addr);
             });
-    graphWindow_ = new FunctionGraphWindow(this);
-    graphWindow_->hide();
+    connect(graphWindow_, &FunctionGraphWindow::addressSelected, this,
+            [this, syncFromGraphClick](uint64_t addr) {
+                syncFromGraphClick(addr, graphWindow_);
+            });
     connect(graphWindow_, &FunctionGraphWindow::navigateRequested, this,
             [this](uint64_t addr) {
                 if (addr != 0) navigateTo(addr);
@@ -743,7 +962,16 @@ void MainWindow::createDockWidgets() {
     splitDockWidget(decompDock_, hexDock_, Qt::Vertical);
     splitDockWidget(hexDock_, patchListDock_, Qt::Vertical);
     splitDockWidget(patchListDock_, stringTableDock_, Qt::Vertical);
+
+    // Open with only Explorer, Disassembly, and Decompiler visible by default;
+    // the remaining panels can be toggled anytime from View / Patch menus.
+    graphDock_->setVisible(false);
+    consoleDock_->setVisible(false);
+    crossRefDock_->setVisible(false);
+    hexDock_->setVisible(false);
+    patchListDock_->setVisible(false);
     stringTableDock_->setVisible(false);
+    applyInitialDockProportions();
     connect(stringTableDock_, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         if (showStringTableAction_)
             showStringTableAction_->setChecked(visible);
@@ -2451,8 +2679,20 @@ void MainWindow::doNavigate(uint64_t addr, const QString& name, bool pushHistory
 
     // ── STEP 4: Status bar update ────────────────────────────────────────
     NAVLOG("STEP4: updating status bar\n");
+    QString displayName = name;
+    if (displayName.isEmpty()) {
+        if (currentFunction_) {
+            displayName = QString::fromStdString(currentFunction_->getName());
+        } else if (program_ && program_->getSymbolTable()) {
+            auto syms = program_->getSymbolTable()->getSymbols(address);
+            if (!syms.empty() && syms[0])
+                displayName = QString::fromStdString(syms[0]->getName());
+        }
+        if (displayName.isEmpty())
+            displayName = QString("0x%1").arg(addr, 0, 16);
+    }
     try {
-        statusFunc_->setText(name);
+        statusFunc_->setText(displayName);
         statusAddr_->setText(QString("0x%1").arg(addr, 0, 16));
     } catch (const std::exception& e) {
         NAVLOG("STEP4 CRASHED: %s\n", e.what());
@@ -2503,11 +2743,15 @@ void MainWindow::doNavigate(uint64_t addr, const QString& name, bool pushHistory
     if (!(navSkipFlags_ & NavSkip_Decompile)) {
         NAVLOG("STEP6: decompile or cache lookup\n");
         try {
-            auto it = decompCache_.find(addr);
+            const uint64_t decompKey = currentFunction_
+                ? currentFunction_->getEntryPoint().getOffset()
+                : addr;
+            auto it = decompCache_.find(decompKey);
             if (it != decompCache_.end()) {
                 NAVLOG("  cache HIT (size=%d)\n", it->second.cCode.size());
-                decompView_->showDecompiled(it->second.cCode, addr,
+                decompView_->showDecompiled(it->second.cCode, decompKey,
                     it->second.markupXml, it->second.opAddresses);
+                decompView_->seek(addr);
             } else {
                 NAVLOG("  cache MISS, calling decompileFunction...\n");
                 auto results = decompInterface_->decompileFunction(address, nullptr);
@@ -2519,12 +2763,13 @@ void MainWindow::doNavigate(uint64_t addr, const QString& name, bool pushHistory
                     entry.cCode = cCode;
                     entry.markupXml = QString::fromStdString(results.markupXml);
                     entry.opAddresses = results.opAddresses;
-                    decompCache_[addr] = entry;
+                    decompCache_[decompKey] = entry;
                     evictDecompCache();
                     NAVLOG("  calling showDecompiled cCode.size()=%d markup.size()=%d opAddrs.size()=%zu\n",
                         cCode.size(), entry.markupXml.size(), entry.opAddresses.size());
-                    decompView_->showDecompiled(cCode, addr,
+                    decompView_->showDecompiled(cCode, decompKey,
                         entry.markupXml, entry.opAddresses);
+                    decompView_->seek(addr);
                     NAVLOG("  showDecompiled done, decompView visible=%d size=(%dx%d)\n",
                         decompView_->isVisible(), decompView_->width(), decompView_->height());
                 } else {
@@ -2573,7 +2818,7 @@ void MainWindow::doNavigate(uint64_t addr, const QString& name, bool pushHistory
     }
 
     try {
-        logOnce(QString("Navigated to: %1 @ 0x%2").arg(name).arg(addr, 0, 16));
+        logOnce(QString("Navigated to: %1 @ 0x%2").arg(displayName).arg(addr, 0, 16));
     } catch (const std::exception& e) {
         NAVLOG("logOnce CRASHED: %s\n", e.what());
     } catch (...) {
@@ -2729,9 +2974,9 @@ void MainWindow::onDisasmAddressDoubleClicked(uint64_t addr) {
     NAVLOG("  getFunctionContaining -> %p\n", (void*)func);
     if (func) {
         name = QString::fromStdString(func->getName());
-        NAVLOG("  found function '%s' entry=0x%llx\n", name.toStdString().c_str(),
-            func->getEntryPoint().getOffset());
-        navigateTo(func->getEntryPoint().getOffset(), name);
+        NAVLOG("  found function '%s' entry=0x%llx, navigating to 0x%llx\n",
+            name.toStdString().c_str(), func->getEntryPoint().getOffset(), addr);
+        navigateTo(addr, name);
     } else {
         NAVLOG("  no function at addr, trying symbol table\n");
         auto syms = program_->getSymbolTable()->getSymbols(address);

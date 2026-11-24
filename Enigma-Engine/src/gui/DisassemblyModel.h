@@ -53,6 +53,7 @@ private:
         uint64_t bodyStart = 0;
         uint64_t bodyEnd = 0;
         QString name;
+        std::vector<std::pair<uint64_t, uint64_t>> ranges;
     };
 
     std::vector<DisasmRow> rows_;

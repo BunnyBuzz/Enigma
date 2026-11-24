@@ -5,6 +5,8 @@
 #include <ghidra/MemoryBlock.h>
 #include <ghidra/Address.h>
 #include <ghidra/AddressFactory.h>
+#include <ghidra/AddressRange.h>
+#include <ghidra/AddressRangeIterator.h>
 #include <ghidra/FunctionManager.h>
 #include <ghidra/FunctionIterator.h>
 #include <ghidra/Function.h>
@@ -61,9 +63,24 @@ void DisassemblyModel::buildIndex(ghidra::ProgramDB* program, ghidra::DecompInte
             uint64_t entry = func->getEntryPoint().getUnsignedOffset();
             uint64_t bStart = bodyMin.getUnsignedOffset();
             uint64_t bEnd = bodyMax.getUnsignedOffset();
-            functions.push_back({ entry, bStart, bEnd, QString::fromStdString(func->getName()) });
-            for (uint64_t a = bStart; a <= bEnd; ++a)
-                coveredAddresses.insert(a);
+            FuncInfo fi{ entry, bStart, bEnd, QString::fromStdString(func->getName()), {} };
+            if (auto* rit = func->getBody().getAddressRanges()) {
+                while (rit->hasNext()) {
+                    ghidra::AddressRange r = rit->next();
+                    uint64_t rs = r.getMinAddress().getUnsignedOffset();
+                    uint64_t re = r.getMaxAddress().getUnsignedOffset();
+                    fi.ranges.push_back({rs, re});
+                    for (uint64_t a = rs; a <= re && a - rs < 0x10000; ++a)
+                        coveredAddresses.insert(a);
+                }
+                delete rit;
+            }
+            if (fi.ranges.empty()) {
+                fi.ranges.push_back({bStart, bEnd});
+                for (uint64_t a = bStart; a <= bEnd && a - bStart < 0x10000; ++a)
+                    coveredAddresses.insert(a);
+            }
+            functions.push_back(std::move(fi));
         }
     }
 
@@ -83,7 +100,7 @@ void DisassemblyModel::buildIndex(ghidra::ProgramDB* program, ghidra::DecompInte
             QString name = QString::fromStdString(sym->getName());
             if (name.isEmpty())
                 name = QString("sub_0x%1").arg(addr, 0, 16);
-            functions.push_back({ addr, addr, addr + 0xFF, name });
+            functions.push_back({ addr, addr, addr + 0xFF, name, {{addr, addr + 0xFF}} });
             for (uint64_t a = addr; a <= addr + 0xFF; ++a)
                 coveredAddresses.insert(a);
         }
@@ -96,45 +113,58 @@ void DisassemblyModel::buildIndex(ghidra::ProgramDB* program, ghidra::DecompInte
     // --- Walk each function body via instruction lengths ---
     std::set<uint64_t> seenInstructionAddresses;
     std::vector<DisasmRow> instructionAndHeaderRows;
+    static constexpr uint64_t kMaxFuncBytes = 0x10000; // 64KB safety bound per function
 
     for (const auto& func : functions) {
-        uint64_t disasmEnd = func.bodyEnd;
-        if (disasmEnd >= func.entry + 0x1000) disasmEnd = func.entry + 0x1000; // cap at 4KB
-
         bool emittedHeader = false;
-        uint64_t addr = func.entry;
-        while (addr <= disasmEnd) {
-            int len = 0;
-            try {
-                len = decomp->instructionLengthAt(addr);
-            } catch (...) {
-                ++addr;
-                continue;
-            }
-            if (len <= 0) {
-                ++addr;
-                continue;
-            }
-            if (seenInstructionAddresses.count(addr)) {
+        uint64_t totalWalked = 0;
+
+        for (const auto& range : func.ranges) {
+            if (totalWalked >= kMaxFuncBytes) break;
+            uint64_t addr = std::max(range.first, func.entry);
+            if (range.first < func.entry && range.second >= func.entry)
+                addr = func.entry;
+            else if (range.second < func.entry)
+                addr = range.first; // outlined pre-entry fragment
+            const uint64_t disasmEnd = std::min(range.second, range.first + (kMaxFuncBytes - totalWalked));
+
+            while (addr <= disasmEnd) {
+                int len = 0;
+                try {
+                    len = decomp->instructionLengthAt(addr);
+                } catch (...) {
+                    ++addr;
+                    ++totalWalked;
+                    continue;
+                }
+                if (len <= 0) {
+                    ++addr;
+                    ++totalWalked;
+                    continue;
+                }
+                if (seenInstructionAddresses.count(addr)) {
+                    addr += len;
+                    totalWalked += len;
+                    continue;
+                }
+                if (!emittedHeader) {
+                    DisasmRow header;
+                    header.kind = DisasmRow::Kind::FunctionHeader;
+                    header.address = func.entry;
+                    header.text = func.name;
+                    instructionAndHeaderRows.push_back(header);
+                    emittedHeader = true;
+                }
+                DisasmRow row;
+                row.kind = DisasmRow::Kind::Instruction;
+                row.address = addr;
+                row.length = len;
+                instructionAndHeaderRows.push_back(row);
+                seenInstructionAddresses.insert(addr);
+                lengthByAddress_[addr] = len;
                 addr += len;
-                continue;
+                totalWalked += len;
             }
-            if (!emittedHeader) {
-                DisasmRow header;
-                header.kind = DisasmRow::Kind::FunctionHeader;
-                header.address = func.entry;
-                header.text = func.name;
-                instructionAndHeaderRows.push_back(header);
-                emittedHeader = true;
-            }
-            DisasmRow row;
-            row.kind = DisasmRow::Kind::Instruction;
-            row.address = addr;
-            row.length = len;
-            instructionAndHeaderRows.push_back(row);
-            seenInstructionAddresses.insert(addr);
-            lengthByAddress_[addr] = len;
-            addr += len;
         }
     }
 
@@ -395,7 +425,7 @@ QString DisassemblyModel::analyzeGap(ghidra::ProgramDB* program, uint64_t gapSta
         for (size_t i = 0; i + 7 < bytes.size(); i += 8) {
             uint64_t val = 0;
             for (int j = 0; j < 8; ++j) val |= static_cast<uint64_t>(bytes[i + j]) << (j * 8);
-            if (val >= 0x10000 && isInExecBlock(val)) ++validPtrs;
+            if (val != 0 && isInExecBlock(val)) ++validPtrs;
         }
         if (validPtrs >= 2) {
             QString result = QString("; --- pointer table (%1 entries) ---").arg(gapSize / 8);
@@ -416,7 +446,7 @@ QString DisassemblyModel::analyzeGap(ghidra::ProgramDB* program, uint64_t gapSta
         for (size_t i = 0; i + 3 < bytes.size(); i += 4) {
             uint32_t val = 0;
             for (int j = 0; j < 4; ++j) val |= static_cast<uint32_t>(bytes[i + j]) << (j * 8);
-            if (val >= 0x10000 && isInExecBlock(val)) ++validPtrs;
+            if (val != 0 && isInExecBlock(val)) ++validPtrs;
         }
         if (validPtrs >= 2) {
             QString result = QString("; --- pointer table (%1 entries) ---").arg(gapSize / 4);

@@ -182,6 +182,31 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_GUI=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+### Launch the GUI
+```bash
+
+./build/enigma_gui                       # empty workspace
+./build/enigma_gui tests/corpus/arm_dyn.elf   # auto-load a binary on startup
+It needs a real display (X11/Wayland). If you're on SSH / headless, the GUI won't show — for a no-window smoke check only:
+QT_QPA_PLATFORM=offscreen ./build/enigma_gui
+```
+### Use the CLI directly
+```bash
+./build/enigma_decompile_full -h
+./build/enigma_decompile_full -all -max-func 50 tests/corpus/large_x86_64.elf
+./build/enigma_decompile_full -base 1000 -entry 1000 -o out.c tests/corpus/simple.bin
+-o writes decompiled C to a file; -all decompiles every discovered function.
+```
+### Other useful binaries
+```bash
+- build/enigma_dump_functions <binary> — function inventory
+- build/enigma_dump_listing <binary> <out.csv> — disassembly listing (used by the Ghidra parity audits)
+- build/enigma_gzf_inspect — inspect Ghidra .gbf/.rep databases
+```
+### If you need to rebuild
+```bash
+cmake --build build -j 8
+```
 
 Dependency availability and compiler configuration may vary by platform. Refer to the repository's build scripts and project documentation for the exact setup used by the current development environment.
 

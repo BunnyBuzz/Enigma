@@ -3,8 +3,12 @@
 #include "FunctionGraphView.h"
 
 #include <QGuiApplication>
+#include <QLabel>
 #include <QScreen>
 #include <QToolBar>
+#include <QWidget>
+
+#include <cmath>
 
 namespace {
 
@@ -46,8 +50,18 @@ FunctionGraphWindow::FunctionGraphWindow(QWidget* parent)
     connect(resetAct, &QAction::triggered, graphView_,
             &FunctionGraphView::zoomReset);
 
+    toolbar->addSeparator();
+    auto* zoomLbl = new QLabel(QStringLiteral(" 100% "), toolbar);
+    zoomLbl->setStyleSheet(QStringLiteral("color: #404040; font-size: 11px; padding: 0 6px;"));
+    toolbar->addWidget(zoomLbl);
+    connect(graphView_, &FunctionGraphView::zoomChanged, toolbar, [zoomLbl](double z) {
+        zoomLbl->setText(QStringLiteral(" %1% ").arg(qRound(z * 100.0)));
+    });
+
     connect(graphView_, &FunctionGraphView::navigateRequested, this,
             &FunctionGraphWindow::navigateRequested);
+    connect(graphView_, &FunctionGraphView::addressSelected, this,
+            &FunctionGraphWindow::addressSelected);
     connect(graphView_, &FunctionGraphView::nodeSelected, this,
             &FunctionGraphWindow::nodeSelected);
 }

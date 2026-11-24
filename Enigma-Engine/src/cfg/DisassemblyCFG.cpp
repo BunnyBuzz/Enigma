@@ -81,8 +81,8 @@ bool DisassemblyCFG::isCallMnemonic(const std::string& mne) {
     const std::string m = upper(mne);
     static const char* kCalls[] = {
         "CALL", "CALLF", "CALLQ", "CALLW", "CALLD", "CALLT",
-        "BL", "BLX",
-        "JAL", "JALR"
+        "BL", "BLX", "BLR", "BLRAA", "BLRAB", "BLRAAZ", "BLRABZ",
+        "JAL", "JALR", "JALX", "BAL", "BCTRL", "BCL"
     };
     for (const char* c : kCalls) {
         if (m == c) return true;
@@ -94,6 +94,7 @@ bool DisassemblyCFG::isReturnMnemonic(const std::string& mne) {
     const std::string m = upper(mne);
     static const char* kRets[] = {
         "RET", "RETN", "RETF", "RETL", "RETQ",
+        "RETAA", "RETAB",
         "IRET", "IRETD", "IRETQ", "SYSRET", "ERET"
     };
     for (const char* c : kRets) {
@@ -106,8 +107,8 @@ bool DisassemblyCFG::isUnconditionalJumpMnemonic(const std::string& mne) {
     const std::string m = upper(mne);
     static const char* kJmps[] = {
         "JMP", "JMPF", "JMPQ", "JMPW", "JMPD",
-        "B", "BX",
-        "J", "JR"
+        "B", "BR", "BX", "BRAA", "BRAB", "BRAAZ", "BRABZ",
+        "J", "JR", "JR.HB", "JRC", "BCTR"
     };
     for (const char* c : kJmps) {
         if (m == c) return true;
@@ -129,10 +130,11 @@ bool DisassemblyCFG::isConditionalJumpMnemonic(const std::string& mne) {
         "JCXZ", "JECXZ", "JRCXZ",
         "LOOP", "LOOPE", "LOOPNE", "LOOPZ", "LOOPNZ",
         // ARM / AArch64 conditional branches
-        "B.EQ", "B.NE", "B.CS", "B.CC", "B.MI", "B.PL", "B.VS", "B.VC",
+        "B.EQ", "B.NE", "B.CS", "B.CC", "B.HS", "B.LO",
+        "B.MI", "B.PL", "B.VS", "B.VC",
         "B.HI", "B.LS", "B.GE", "B.LT", "B.GT", "B.LE", "B.AL", "B.NV",
         "CBZ", "CBNZ", "TBZ", "TBNZ",
-        // RISC-V conditional branches
+        // RISC-V / MIPS conditional branches
         "BEQ", "BNE", "BLT", "BGE", "BLTU", "BGEU", "BEQZ", "BNEZ", "BLEZ", "BGEZ", "BLTZ", "BGTZ"
     };
     for (const char* c : kConds) {
@@ -202,10 +204,20 @@ void DisassemblyCFG::build(const std::vector<CfgInsn>& insns,
 
         EdgeKind kind = EdgeKind::Unconditional;
         bool flow = true;
+        // Sleigh AArch64 splits `b.lt target` into mnemonic `"b"` and operands `".lt target"`.
+        auto hasDotConditionOperand = [](const std::string& ops) -> bool {
+            size_t p = 0;
+            while (p < ops.size() && (ops[p] == ' ' || ops[p] == '\t')) ++p;
+            if (p >= ops.size() || ops[p] != '.') return false;
+            std::string cc = upper(ops.substr(p, 3));
+            return cc != ".AL" && cc != ".NV";
+        };
         if (isCallMnemonic(in.mnemonic)) {
             kind = EdgeKind::Call;
         } else if (isReturnMnemonic(in.mnemonic)) {
             kind = EdgeKind::Return;
+        } else if (upper(in.mnemonic) == "B" && hasDotConditionOperand(in.operands)) {
+            kind = EdgeKind::Conditional;
         } else if (isUnconditionalJumpMnemonic(in.mnemonic)) {
             kind = EdgeKind::Unconditional;
         } else if (isConditionalJumpMnemonic(in.mnemonic)) {

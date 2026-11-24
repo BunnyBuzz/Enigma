@@ -5,10 +5,12 @@
 FunctionExplorer::FunctionExplorer(QWidget* parent)
     : QWidget(parent)
 {
+    setMinimumWidth(180);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 4);
 
     tree_ = new QTreeWidget(this);
+    tree_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     tree_->setHeaderLabels({tr("Name"), tr("Address")});
     tree_->setToolTip(tr("Function Explorer — double-click to navigate to a function"));
     tree_->setAlternatingRowColors(true);

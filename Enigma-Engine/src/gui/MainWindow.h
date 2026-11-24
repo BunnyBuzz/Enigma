@@ -129,10 +129,14 @@ public slots:
     uint64_t currentAddress() const { return currentAddr_; }
     void navigateTo(uint64_t addr, const QString& name = QString(), bool pushHistory = true);
 
+protected:
+    void showEvent(QShowEvent* event) override;
+
 private:
     void createMenuBar();
     void createDockWidgets();
     void createStatusBar();
+    void applyInitialDockProportions();
     void populateExplorer();
     void runAnalysisAsync();
     void refreshGraph(uint64_t addr);
@@ -231,6 +235,7 @@ private:
     void doNavigate(uint64_t addr, const QString& name, bool pushHistory = true);
     bool isCurrentFunctionValid() const;
     void updateMinimapViewport();
+    bool initialLayoutApplied_ = false;
     AddressMinimap* addressMinimap_ = nullptr;
     CommandPaletteDialog* commandPalette_ = nullptr;
 };

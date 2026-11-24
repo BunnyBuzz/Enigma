@@ -178,10 +178,13 @@ FlowType* Disassembler::determineFlowType(const std::string& mnemonic, const std
         return const_cast<FlowType*>(&RefTypes::COMPUTED_JUMP);
     }
     if (mnemonic == "jmp" || mnemonic == "b" || mnemonic == "br" || mnemonic == "jr" ||
-        mnemonic == "bctr" || mnemonic == "b" || mnemonic == "jr.hb" || mnemonic == "jrc" ||
-        mnemonic == "jrc.hb" || mnemonic == "jrc" ||
+        mnemonic == "bctr" || mnemonic == "jr.hb" || mnemonic == "jrc" ||
+        mnemonic == "jrc.hb" ||
         (mnemonic == "jmpq" && !operands.empty() && operands[0].find('*') == 0)) {
         return const_cast<FlowType*>(&RefTypes::UNCONDITIONAL_JUMP);
+    }
+    if (mnemonic == "braa" || mnemonic == "brab" || mnemonic == "braaz" || mnemonic == "brabz") {
+        return const_cast<FlowType*>(&RefTypes::COMPUTED_JUMP);
     }
     if (mnemonic == "je" || mnemonic == "jne" || mnemonic == "jz" || mnemonic == "jnz" ||
         mnemonic == "beq" || mnemonic == "bne" ||
@@ -201,14 +204,25 @@ FlowType* Disassembler::determineFlowType(const std::string& mnemonic, const std
         return const_cast<FlowType*>(&RefTypes::CONDITIONAL_JUMP);
     }
     if (mnemonic == "call" || mnemonic == "bl" || mnemonic == "blx" || mnemonic == "jal" ||
-        mnemonic == "jalr" || mnemonic == "blr" || mnemonic == "jalx") {
+        mnemonic == "jalr" || mnemonic == "blr" || mnemonic == "jalx" ||
+        mnemonic == "blraa" || mnemonic == "blrab" || mnemonic == "blraaz" || mnemonic == "blrabz") {
         return const_cast<FlowType*>(&RefTypes::UNCONDITIONAL_CALL);
     }
     // SYSCALL/SVC are kernel-entry calls: Ghidra's x86 and AArch64 specs model
     // them as userops with normal fall-through, so the instruction after them
     // is part of the function (e.g. glibc wrappers test the return value).
-    if (mnemonic == "ret" || mnemonic == "bx" || mnemonic == "eret" ||
-        (mnemonic == "pop" && !operands.empty() && operands[0] == "pc")) {
+    auto hasPcRegisterOperand = [&operands]() {
+        for (const std::string& op : operands) {
+            if (op == "pc" || op.find(" pc}") != std::string::npos ||
+                op.find("{pc") != std::string::npos || op.find(" pc,") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (mnemonic == "ret" || mnemonic == "retaa" || mnemonic == "retab" ||
+        mnemonic == "bx" || mnemonic == "eret" ||
+        (mnemonic == "pop" && hasPcRegisterOperand())) {
         return const_cast<FlowType*>(&RefTypes::TERMINATOR);
     }
     // ARM PLT stubs end in 'ldr pc, [reg, #imm]!' — an indirect return jump.

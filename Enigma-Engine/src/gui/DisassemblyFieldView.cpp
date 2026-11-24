@@ -502,7 +502,7 @@ const DisassemblyFieldView::DecodedInstruction* DisassemblyFieldView::decodedIns
                 try {
                     std::string text = decomp_->disassembleAt(af->oldGetAddressFromLong(addr), 1);
                     static QRegularExpression instRe(
-                        QStringLiteral("^0x([0-9a-fA-F]+):\\s+([A-Za-z][A-Za-z0-9]*)\\s*(.*)$"));
+                        QStringLiteral("^0x([0-9a-fA-F]+):\\s+([A-Za-z][A-Za-z0-9_.]*)\\s*(.*)$"));
                     QString qtext = QString::fromStdString(text);
                     QString trimmed = qtext.trimmed();
                     auto m = instRe.match(trimmed);
@@ -642,7 +642,7 @@ void DisassemblyFieldView::parseFallbackLine(const QString& rawLine, FallbackLin
         return;
     }
     static QRegularExpression instRe(
-        QStringLiteral("^0x([0-9a-fA-F]+):\\s+([A-Za-z][A-Za-z0-9]*)\\s*(.*)$"));
+        QStringLiteral("^0x([0-9a-fA-F]+):\\s+([A-Za-z][A-Za-z0-9_.]*)\\s*(.*)$"));
     auto m = instRe.match(trimmed);
     if (m.hasMatch()) {
         bool ok = false;
@@ -873,7 +873,10 @@ void DisassemblyFieldView::selectTokenAt(int row, int col) {
     selectedToken_ = {row, tok->startCol, tok->len};
     anchor_ = {row, tok->startCol};
     caret_ = {row, tok->startCol + tok->len};
-    highlightWord_ = tok->text;
+    const bool isHighlightable = (tok->kind != TokenKind::Punctuation &&
+                                  tok->kind != TokenKind::Plain &&
+                                  tok->text != QLatin1String("#"));
+    highlightWord_ = isHighlightable ? tok->text : QString();
     highlightKind_ = tok->kind;
     currentRow_ = row;
     currentAddr_ = lineAddr;
@@ -1535,7 +1538,10 @@ void DisassemblyFieldView::mouseDoubleClickEvent(QMouseEvent* event) {
             selectedToken_ = {hit.row, tok->startCol, tok->len};
             anchor_ = {hit.row, tok->startCol};
             caret_ = {hit.row, tok->startCol + tok->len};
-            highlightWord_ = tok->text;
+            const bool isHighlightable = (tok->kind != TokenKind::Punctuation &&
+                                          tok->kind != TokenKind::Plain &&
+                                          tok->text != QLatin1String("#"));
+            highlightWord_ = isHighlightable ? tok->text : QString();
             highlightKind_ = tok->kind;
             currentRow_ = hit.row;
             currentAddr_ = (indexBuilt_ ? model_.rowToAddress(hit.row) : fallbackLines_[hit.row].addr);
@@ -1989,34 +1995,64 @@ QString DisassemblyFieldView::formatBytes(const std::vector<uint8_t>& bytes) {
 }
 
 bool DisassemblyFieldView::isCallMnemonic(const QString& mne) {
-    static const QStringList calls = {
+    static const QSet<QString> calls = {
         QStringLiteral("CALL"), QStringLiteral("CALLF"),
         QStringLiteral("CALLQ"), QStringLiteral("CALLW"), QStringLiteral("CALLD"),
-        QStringLiteral("CALLT")
+        QStringLiteral("CALLT"),
+        // ARM / AArch64 / MIPS / RISC-V / PowerPC
+        QStringLiteral("BL"), QStringLiteral("BLX"), QStringLiteral("BLR"),
+        QStringLiteral("BLRAA"), QStringLiteral("BLRAB"),
+        QStringLiteral("BLRAAZ"), QStringLiteral("BLRABZ"),
+        QStringLiteral("JAL"), QStringLiteral("JALR"), QStringLiteral("JALX"),
+        QStringLiteral("BAL"), QStringLiteral("BCTRL"), QStringLiteral("BCL")
     };
     return calls.contains(mne.toUpper());
 }
 
 bool DisassemblyFieldView::isBranchMnemonic(const QString& mne) {
-    static const QStringList branch = {
-        QStringLiteral("JMP"), QStringLiteral("JMPF"),
+    static const QSet<QString> branch = {
+        QStringLiteral("JMP"), QStringLiteral("JMPF"), QStringLiteral("JMPQ"),
         QStringLiteral("JE"), QStringLiteral("JNE"), QStringLiteral("JZ"), QStringLiteral("JNZ"),
         QStringLiteral("JA"), QStringLiteral("JAE"), QStringLiteral("JB"), QStringLiteral("JBE"),
         QStringLiteral("JG"), QStringLiteral("JGE"), QStringLiteral("JL"), QStringLiteral("JLE"),
         QStringLiteral("JO"), QStringLiteral("JNO"), QStringLiteral("JS"), QStringLiteral("JNS"),
         QStringLiteral("JP"), QStringLiteral("JNP"), QStringLiteral("JC"), QStringLiteral("JNC"),
+        QStringLiteral("JCXZ"), QStringLiteral("JECXZ"), QStringLiteral("JRCXZ"),
         QStringLiteral("RET"), QStringLiteral("RETN"), QStringLiteral("RETF"),
+        QStringLiteral("RETQ"), QStringLiteral("RETL"),
+        QStringLiteral("RETAA"), QStringLiteral("RETAB"),
         QStringLiteral("IRET"), QStringLiteral("IRETD"), QStringLiteral("IRETQ"),
         QStringLiteral("SYSCALL"), QStringLiteral("SYSRET"), QStringLiteral("SYSENTER"),
         QStringLiteral("INT"), QStringLiteral("INT3"), QStringLiteral("INTO"),
         QStringLiteral("LOOP"), QStringLiteral("LOOPE"), QStringLiteral("LOOPNE"),
-        QStringLiteral("LOOPZ"), QStringLiteral("LOOPNZ")
+        QStringLiteral("LOOPZ"), QStringLiteral("LOOPNZ"),
+        // ARM / AArch64
+        QStringLiteral("B"), QStringLiteral("BR"), QStringLiteral("BX"),
+        QStringLiteral("BRAA"), QStringLiteral("BRAB"),
+        QStringLiteral("BRAAZ"), QStringLiteral("BRABZ"),
+        QStringLiteral("ERET"), QStringLiteral("SVC"),
+        QStringLiteral("B.EQ"), QStringLiteral("B.NE"), QStringLiteral("B.CS"),
+        QStringLiteral("B.CC"), QStringLiteral("B.HS"), QStringLiteral("B.LO"),
+        QStringLiteral("B.MI"), QStringLiteral("B.PL"), QStringLiteral("B.VS"),
+        QStringLiteral("B.VC"), QStringLiteral("B.HI"), QStringLiteral("B.LS"),
+        QStringLiteral("B.GE"), QStringLiteral("B.LT"), QStringLiteral("B.GT"),
+        QStringLiteral("B.LE"), QStringLiteral("B.AL"), QStringLiteral("B.NV"),
+        QStringLiteral("CBZ"), QStringLiteral("CBNZ"), QStringLiteral("TBZ"), QStringLiteral("TBNZ"),
+        // MIPS / RISC-V / PowerPC
+        QStringLiteral("J"), QStringLiteral("JR"), QStringLiteral("JR.HB"), QStringLiteral("JRC"),
+        QStringLiteral("BEQ"), QStringLiteral("BNE"), QStringLiteral("BLT"), QStringLiteral("BGE"),
+        QStringLiteral("BLTU"), QStringLiteral("BGEU"), QStringLiteral("BEQZ"), QStringLiteral("BNEZ"),
+        QStringLiteral("BLEZ"), QStringLiteral("BGEZ"), QStringLiteral("BLTZ"), QStringLiteral("BGTZ"),
+        QStringLiteral("ECALL"), QStringLiteral("EBREAK"),
+        QStringLiteral("BCTR"), QStringLiteral("BLR"), QStringLiteral("SC")
     };
-    return branch.contains(mne.toUpper());
+    const QString up = mne.toUpper();
+    return branch.contains(up) || up.startsWith(QStringLiteral("B."));
 }
 
 TokenKind DisassemblyFieldView::classifyIdentifier(const QString& id) const {
-    static const QStringList registers = {
+    static const QSet<QString> registers = {
+        // x86 / x86_64
         QStringLiteral("eax"), QStringLiteral("ebx"), QStringLiteral("ecx"),
         QStringLiteral("edx"), QStringLiteral("esi"), QStringLiteral("edi"),
         QStringLiteral("ebp"), QStringLiteral("esp"), QStringLiteral("eip"),
@@ -2054,10 +2090,45 @@ TokenKind DisassemblyFieldView::classifyIdentifier(const QString& id) const {
         QStringLiteral("st0"), QStringLiteral("st1"), QStringLiteral("st2"),
         QStringLiteral("st3"), QStringLiteral("st4"), QStringLiteral("st5"),
         QStringLiteral("st6"), QStringLiteral("st7"),
+        // ARM / AArch64 / RISC-V / MIPS / PPC named registers
+        QStringLiteral("wsp"), QStringLiteral("xzr"), QStringLiteral("wzr"),
+        QStringLiteral("lr"),  QStringLiteral("fp"),  QStringLiteral("pc"),
+        QStringLiteral("cpsr"),QStringLiteral("spsr"),QStringLiteral("nzcv"),
+        QStringLiteral("ip"),  QStringLiteral("sl"),  QStringLiteral("sb"),
+        QStringLiteral("zero"),QStringLiteral("ra"),  QStringLiteral("gp"),
+        QStringLiteral("tp"),  QStringLiteral("at"),
+        QStringLiteral("ctr"), QStringLiteral("cr0"), QStringLiteral("cr1"),
+        QStringLiteral("cr2"), QStringLiteral("cr3"), QStringLiteral("cr4"),
+        QStringLiteral("cr5"), QStringLiteral("cr6"), QStringLiteral("cr7"),
+        QStringLiteral("k0"),  QStringLiteral("k1"),
+        QStringLiteral("t0"),  QStringLiteral("t1"),  QStringLiteral("t2"),
+        QStringLiteral("t3"),  QStringLiteral("t4"),  QStringLiteral("t5"),
+        QStringLiteral("t6"),  QStringLiteral("t7"),  QStringLiteral("t8"),
+        QStringLiteral("t9"),
+        QStringLiteral("a0"),  QStringLiteral("a1"),  QStringLiteral("a2"),
+        QStringLiteral("a3"),  QStringLiteral("a4"),  QStringLiteral("a5"),
+        QStringLiteral("a6"),  QStringLiteral("a7"),
+        QStringLiteral("s0"),  QStringLiteral("s1"),  QStringLiteral("s2"),
+        QStringLiteral("s3"),  QStringLiteral("s4"),  QStringLiteral("s5"),
+        QStringLiteral("s6"),  QStringLiteral("s7"),  QStringLiteral("s8"),
+        QStringLiteral("s9"),  QStringLiteral("s10"), QStringLiteral("s11")
     };
     QString lower = id.toLower();
     if (registers.contains(lower))
         return TokenKind::Register;
+    // Match indexed ARM/AArch64/PPC/MIPS registers: x0..x30, w0..w30, r0..r31,
+    // v0..v31, q0..q31, d0..d31, s0..s31, h0..h31, b0..b31
+    if (lower.size() >= 2 && lower.size() <= 3) {
+        QChar p = lower[0];
+        if (p == QLatin1Char('x') || p == QLatin1Char('w') || p == QLatin1Char('r') ||
+            p == QLatin1Char('v') || p == QLatin1Char('q') || p == QLatin1Char('d') ||
+            p == QLatin1Char('s') || p == QLatin1Char('h') || p == QLatin1Char('b')) {
+            bool ok = false;
+            int idx = lower.mid(1).toInt(&ok);
+            if (ok && idx >= 0 && idx <= 31)
+                return TokenKind::Register;
+        }
+    }
     bool allDigits = true;
     for (const QChar& c : id) {
         if (!c.isDigit()) { allDigits = false; break; }
@@ -2094,7 +2165,50 @@ std::vector<Token> DisassemblyFieldView::tokenizeOperands(const QString& ops, ui
             continue;
         }
 
-        if (c == QLatin1Char('0') && i + 1 < n && ops[i + 1] == QLatin1Char('x')) {
+        // ARM/AArch64 immediate prefix `#` (e.g. `#0x500`, `#-0xc`, `#16`):
+        // keep `#` attached to its literal so clicking `#` does not highlight
+        // every `#` on screen, and mark as constant (not a jump target).
+        if (c == QLatin1Char('#')) {
+            int j = i + 1;
+            if (j < n && (ops[j] == QLatin1Char('-') || ops[j] == QLatin1Char('+')))
+                ++j;
+            if (j + 1 < n && ops[j] == QLatin1Char('0') &&
+                (ops[j + 1] == QLatin1Char('x') || ops[j + 1] == QLatin1Char('X'))) {
+                j += 2;
+                while (j < n && ops[j].isLetterOrNumber()) ++j;
+            } else {
+                while (j < n && ops[j].isDigit()) ++j;
+            }
+            QString txt = ops.mid(i, j - i);
+            Token t;
+            t.text = txt;
+            t.kind = bracketDepth > 0 ? TokenKind::MemRef : TokenKind::Immediate;
+            t.addr = lineAddr;
+            if (program_ && txt.size() > 3 && txt.mid(1, 2).compare(QStringLiteral("0x"), Qt::CaseInsensitive) == 0) {
+                bool ok = false;
+                uint64_t val = txt.mid(3).toULongLong(&ok, 16);
+                if (ok && val <= static_cast<uint64_t>(INT64_MAX)) {
+                    try {
+                        if (auto* eqTable = program_->getEquateTable()) {
+                            ghidra::Address a =
+                                program_->getAddressFactory()->oldGetAddressFromLong(lineAddr);
+                            ghidra::Equate* eq = eqTable->getEquate(
+                                a, opIndex, static_cast<int64_t>(val));
+                            if (eq) {
+                                t.text = QString::fromStdString(eq->getName());
+                                t.kind = TokenKind::Equate;
+                            }
+                        }
+                    } catch (...) {}
+                }
+            }
+            result.push_back(t);
+            i = consumeSpaces(j);
+            result.back().spaceAfter = i - j;
+            continue;
+        }
+
+        if (c == QLatin1Char('0') && i + 1 < n && (ops[i + 1] == QLatin1Char('x') || ops[i + 1] == QLatin1Char('X'))) {
             int j = i + 2;
             while (j < n && (ops[j].isDigit() ||
                              (ops[j] >= QLatin1Char('a') && ops[j] <= QLatin1Char('f')) ||
@@ -2106,8 +2220,18 @@ std::vector<Token> DisassemblyFieldView::tokenizeOperands(const QString& ops, ui
             t.addr = lineAddr;
             bool ok = false;
             uint64_t val = txt.mid(2).toULongLong(&ok, 16);
-            if (ok) {
-                if (val > 0x1000) t.refTarget = val;
+            if (ok && val != 0) {
+                bool isValidTarget = false;
+                if (program_ && program_->getMemory() && program_->getAddressFactory()) {
+                    try {
+                        ghidra::Address targetAddr =
+                            program_->getAddressFactory()->oldGetAddressFromLong(val);
+                        isValidTarget = (program_->getMemory()->getBlock(targetAddr) != nullptr);
+                    } catch (...) {}
+                } else {
+                    isValidTarget = (val > 0x1000);
+                }
+                if (isValidTarget) t.refTarget = val;
                 // Equate lookup: replace the raw constant with its defined name
                 // when the import bound one to this (address, operand).
                 if (program_ && val <= static_cast<uint64_t>(INT64_MAX)) {

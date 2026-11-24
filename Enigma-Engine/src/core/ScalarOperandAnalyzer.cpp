@@ -22,6 +22,7 @@
 #include <ghidra/AddressFactory.h>
 #include <algorithm>
 #include <cstdlib>
+#include <queue>
 #include <unordered_set>
 #include <vector>
 
@@ -479,6 +480,11 @@ void ScalarOperandAnalyzer::decodeJumpTableTargets(Program* program,
         arch = "MIPS";
     else if (lid.find("PPC") != std::string::npos || lid.find("PowerPC") != std::string::npos)
         arch = "PPC";
+    // Jump-table case decoding is tuned for the x86 `jmp [table+idx*scale]`
+    // pattern audited against Ghidra. Other architectures have different
+    // table encodings; decoding their "targets" invents code Ghidra does not
+    // have (notably AArch64). Detection/labels remain harmless.
+    if (arch != "x86") return;
     int bitness = (lid.find("64") != std::string::npos) ? 64 : 32;
     bool bigEndian = (lid.find("BE") != std::string::npos);
     auto disassembler = createDisassembler(arch, bitness, bigEndian);
@@ -502,11 +508,28 @@ void ScalarOperandAnalyzer::decodeJumpTableTargets(Program* program,
 
     static constexpr int kMaxCaseInstructions = 128;
     uint8_t buf[16];
-    for (const Address& target : targets) {
-        if (currentMonitor_ && currentMonitor_->isCancelled()) return;
-        MemoryBlock* block = memory->getBlock(target);
-        if (!block || !block->isExecute()) continue;
-        uint64_t cur = static_cast<uint64_t>(target.getOffset());
+    std::queue<uint64_t> work;
+    std::unordered_set<uint64_t> queued;
+    auto enqueue = [&](uint64_t a) {
+        if (!a || !queued.insert(a).second) return;
+        Address wa(const_cast<AddressSpace*>(space), static_cast<int64_t>(a));
+        MemoryBlock* b = memory->getBlock(wa);
+        if (b && b->isExecute()) work.push(a);
+    };
+    for (const Address& target : targets)
+        enqueue(static_cast<uint64_t>(target.getOffset()));
+
+    auto branchTarget = [](const DisassembledInstruction& di) -> uint64_t {
+        for (const auto& op : di.operands) {
+            if (op.rfind("0x", 0) == 0)
+                return static_cast<uint64_t>(std::strtoull(op.c_str() + 2, nullptr, 16));
+        }
+        return 0;
+    };
+
+    while (!work.empty() && !(currentMonitor_ && currentMonitor_->isCancelled())) {
+        uint64_t cur = work.front();
+        work.pop();
         for (int i = 0; i < kMaxCaseInstructions; ++i) {
             Address curAddr(const_cast<AddressSpace*>(space), static_cast<int64_t>(cur));
             if (listing->getInstructionAt(curAddr)) break;
@@ -526,6 +549,12 @@ void ScalarOperandAnalyzer::decodeJumpTableTargets(Program* program,
                     if (sc) inst->addOperandScalar(static_cast<int>(oi), sc.release());
             listing->addInstruction(inst);
             FlowType* ft = di.flowType;
+            // Only follow conditional targets: unconditional jumps commonly
+            // leave the function (tail calls / epilogue sharing) and pulling
+            // those blocks in creates spurious extra instructions.
+            if (ft && ft->isJump() && ft->isConditional() && !ft->isComputed()) {
+                enqueue(branchTarget(di));
+            }
             if (ft && (ft->isTerminal() || (ft->isJump() && !ft->isConditional()))) break;
             cur += static_cast<uint64_t>(di.length);
         }

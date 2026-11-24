@@ -1,5 +1,7 @@
 #include <QApplication>
 #include <QStyleFactory>
+#include <QStyleHints>
+#include <QPalette>
 #include <QMessageLogContext>
 #include <QDebug>
 #include "MainWindow.h"
@@ -13,6 +15,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstdio>
+#include <iostream>
 #include <exception>
 
 // ── Crash logging infrastructure ─────────────────────────────────────────
@@ -203,6 +206,29 @@ int main(int argc, char** argv) {
     installCrashHandlers();
 
     QApplication app(argc, argv);
+    app.setStyle(QStyleFactory::create("Fusion"));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Light);
+#endif
+    QPalette lightPalette;
+    lightPalette.setColor(QPalette::Window, QColor(0xf0, 0xf0, 0xf0));
+    lightPalette.setColor(QPalette::WindowText, QColor(0x1e, 0x1e, 0x1e));
+    lightPalette.setColor(QPalette::Base, QColor(0xff, 0xff, 0xff));
+    lightPalette.setColor(QPalette::AlternateBase, QColor(0xf5, 0xf5, 0xf5));
+    lightPalette.setColor(QPalette::ToolTipBase, QColor(0xff, 0xff, 0xdc));
+    lightPalette.setColor(QPalette::ToolTipText, QColor(0x1e, 0x1e, 0x1e));
+    lightPalette.setColor(QPalette::Text, QColor(0x1e, 0x1e, 0x1e));
+    lightPalette.setColor(QPalette::Button, QColor(0xf0, 0xf0, 0xf0));
+    lightPalette.setColor(QPalette::ButtonText, QColor(0x1e, 0x1e, 0x1e));
+    lightPalette.setColor(QPalette::BrightText, Qt::white);
+    lightPalette.setColor(QPalette::Link, QColor(0x00, 0x66, 0xcc));
+    lightPalette.setColor(QPalette::Highlight, QColor(0x00, 0x78, 0xd4));
+    lightPalette.setColor(QPalette::HighlightedText, Qt::white);
+    lightPalette.setColor(QPalette::PlaceholderText, QColor(0x80, 0x80, 0x80));
+    lightPalette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x90, 0x90, 0x90));
+    lightPalette.setColor(QPalette::Disabled, QPalette::Text, QColor(0x90, 0x90, 0x90));
+    lightPalette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(0x90, 0x90, 0x90));
+    app.setPalette(lightPalette);
     app.setApplicationName("Enigma Engine");
     app.setOrganizationName("Enigma");
 
@@ -214,6 +240,17 @@ int main(int argc, char** argv) {
     w.setWindowTitle("Enigma Engine");
     w.resize(1400, 850);
     w.showMaximized();
+
+    if (std::getenv("ENIGMA_DUMP_LAYOUT")) {
+        for (QObject* o : w.children()) {
+            auto* d = qobject_cast<QDockWidget*>(o);
+            if (!d) continue;
+            QRect g = d->frameGeometry();
+            std::cerr << "DOCK " << d->objectName().toStdString()
+                      << " geo=" << g.x() << "," << g.y() << " " << g.width() << "x" << g.height()
+                      << " floating=" << d->isFloating() << " visible=" << d->isVisible() << "\n";
+        }
+    }
 
     // Command-line: first arg is binary path to auto-load for debugging
     if (argc > 1) {

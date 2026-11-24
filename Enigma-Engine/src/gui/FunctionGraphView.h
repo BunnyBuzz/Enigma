@@ -55,12 +55,15 @@ public slots:
 
 signals:
     void nodeSelected(int blockIndex);
+    void addressSelected(uint64_t addr);
     void navigateRequested(uint64_t addr);
+    void zoomChanged(double zoom);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -71,8 +74,11 @@ private:
     void updateScrollBars();
     // Scroll so the content center lands on the viewport center.
     void centerOnContent();
+    void ensureBlockVisible(int blockIndex);
     QRect nodeRectPx(int i) const;
     int nodeAt(const QPoint& pos) const;
+    int nodeIndexAt(const QPoint& pos) const;
+    uint64_t addressAt(const QPoint& pos, bool preferTarget) const;
     // Centering offset (device px) applied when content is smaller than the
     // viewport; added to every content coordinate.
     void contentOrigin(double& ox, double& oy) const;

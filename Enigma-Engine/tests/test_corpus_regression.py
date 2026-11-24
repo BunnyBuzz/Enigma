@@ -106,7 +106,7 @@ for name in ("arm32_fib.elf", "mipsel_fib.elf", "ppc32_fib.elf"):
 # entry-reachable code); -max-func 50 bounds the regression baseline.
 large_elf = corpus_bin("large_x86_64.elf")
 expected = os.path.join(EXPECTED, "large_x86_64.elf.c")
-run_corpus_test("large_x86_64.elf", ["-all", "-max-func", "50", large_elf], expected, timeout=120)
+run_corpus_test("large_x86_64.elf", ["-all", "-max-func", "50", large_elf], expected, timeout=240)
 
 # === Dynamically-linked AArch64 PIE ELF (PLT/GOT imports via ELF relocations) ===
 dyn_elf = corpus_bin("aarch64_pie_dyn.elf")

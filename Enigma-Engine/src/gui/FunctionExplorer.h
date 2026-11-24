@@ -14,6 +14,7 @@ class FunctionExplorer : public QWidget {
     Q_OBJECT
 public:
     explicit FunctionExplorer(QWidget* parent = nullptr);
+    QSize sizeHint() const override { return QSize(230, 600); }
 
     void clear();
     QTreeWidgetItem* addCategory(const QString& name);

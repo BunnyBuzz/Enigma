@@ -210,8 +210,9 @@ GraphLayout layoutFunctionGraph(const std::vector<CfgBlock>& blocks,
             });
             for (int ei : stubEdges) {
                 const CfaEdge& e = edges[ei];
-                if (e.toRow >= 0 && !e.isReturn() && !e.isComputed() &&
-                    e.kind != EdgeKind::Call)
+                if (e.kind == EdgeKind::Call || e.kind == EdgeKind::ComputedCall)
+                    continue; // intra-block calls stay inside the block box
+                if (e.toRow >= 0 && !e.isReturn() && !e.isComputed())
                     continue; // already routed above
                 routables.push_back({bi, -1, ei, e.kind, false});
             }
@@ -230,9 +231,106 @@ GraphLayout layoutFunctionGraph(const std::vector<CfgBlock>& blocks,
     }
     for (const CfaEdge& se : spanStorage) spanEdges.push_back(&se);
     const std::vector<int> lanes = assignTracks(spanEdges);
-    size_t laneIdx = 0;
 
-    for (const Routable& r : routables) {
+    // Precompute distributed horizontal ports for forward edges so multiple
+    // outgoing/incoming edges do not stack on the exact center pixel.
+    std::vector<int> fwdLane(routables.size(), 0);
+    std::vector<bool> fwdIsBack(routables.size(), false);
+    std::unordered_map<int, std::vector<size_t>> outFwdByBlock;
+    std::unordered_map<int, std::vector<size_t>> inFwdByBlock;
+    {
+        size_t li = 0;
+        for (size_t i = 0; i < routables.size(); ++i) {
+            const Routable& r = routables[i];
+            if (r.to < 0) continue;
+            fwdLane[i] = lanes[li++];
+            const GraphNode* src = nodeByBlock[r.from];
+            const GraphNode* dst = nodeByBlock[r.to];
+            fwdIsBack[i] = (dst->row <= src->row);
+            if (!fwdIsBack[i]) {
+                outFwdByBlock[r.from].push_back(i);
+                inFwdByBlock[r.to].push_back(i);
+            }
+        }
+    }
+
+    std::vector<int> srcPortX(routables.size(), 0);
+    std::vector<int> dstPortX(routables.size(), 0);
+
+    auto distributePorts = [&](int center, int boxWidth, size_t idx, size_t count) -> int {
+        if (count <= 1) return center;
+        const int maxSpan = std::max(2, boxWidth / 2);
+        const int idealStep = std::max(2, metrics.charWidth * 3);
+        const int span = std::min(maxSpan, static_cast<int>(count - 1) * idealStep);
+        return center - span / 2 + static_cast<int>(idx * span / (count - 1));
+    };
+
+    for (auto& kv : outFwdByBlock) {
+        auto& list = kv.second;
+        const GraphNode* src = nodeByBlock[kv.first];
+        std::sort(list.begin(), list.end(), [&](size_t a, size_t b) {
+            const GraphNode* da = nodeByBlock[routables[a].to];
+            const GraphNode* db = nodeByBlock[routables[b].to];
+            if (da->col != db->col) return da->col < db->col;
+            if (da->row != db->row) return da->row < db->row;
+            return routables[a].to < routables[b].to;
+        });
+        const int cx = src->x + src->w / 2;
+        for (size_t k = 0; k < list.size(); ++k)
+            srcPortX[list[k]] = distributePorts(cx, src->w, k, list.size());
+    }
+
+    for (auto& kv : inFwdByBlock) {
+        auto& list = kv.second;
+        const GraphNode* dst = nodeByBlock[kv.first];
+        std::sort(list.begin(), list.end(), [&](size_t a, size_t b) {
+            const size_t ia = a;
+            const size_t ib = b;
+            if (srcPortX[ia] != srcPortX[ib]) return srcPortX[ia] < srcPortX[ib];
+            const GraphNode* sa = nodeByBlock[routables[ia].from];
+            const GraphNode* sb = nodeByBlock[routables[ib].from];
+            if (sa->row != sb->row) return sa->row > sb->row;
+            return routables[ia].from < routables[ib].from;
+        });
+        const int cx = dst->x + dst->w / 2;
+        for (size_t k = 0; k < list.size(); ++k)
+            dstPortX[list[k]] = distributePorts(cx, dst->w, k, list.size());
+    }
+
+    // Also offset multiple back-edge ports on the right side of nodes.
+    std::unordered_map<int, std::vector<size_t>> backOutByBlock, backInByBlock;
+    for (size_t i = 0; i < routables.size(); ++i) {
+        if (routables[i].to >= 0 && fwdIsBack[i]) {
+            backOutByBlock[routables[i].from].push_back(i);
+            backInByBlock[routables[i].to].push_back(i);
+        }
+    }
+    std::vector<int> backSrcY(routables.size(), 0);
+    std::vector<int> backDstY(routables.size(), 0);
+    for (auto& kv : backOutByBlock) {
+        auto& list = kv.second;
+        const GraphNode* src = nodeByBlock[kv.first];
+        for (size_t k = 0; k < list.size(); ++k) {
+            const int mid = src->y + src->h / 2;
+            backSrcY[list[k]] = distributePorts(mid, src->h, k, list.size());
+        }
+    }
+    for (auto& kv : backInByBlock) {
+        auto& list = kv.second;
+        const GraphNode* dst = nodeByBlock[kv.first];
+        for (size_t k = 0; k < list.size(); ++k) {
+            const int mid = dst->y + dst->h / 2;
+            backDstY[list[k]] = distributePorts(mid, dst->h, k, list.size());
+        }
+    }
+
+    const int baseWidth = out.width;
+    const int rowMargin = std::max(1, metrics.rowGap / 4);
+    const int laneBand = std::max(1, metrics.rowGap - 2 * rowMargin);
+    const int laneStep = std::max(1, laneBand / std::max(1, kCFAMaxTracks));
+
+    for (size_t i = 0; i < routables.size(); ++i) {
+        const Routable& r = routables[i];
         GraphEdge ge;
         ge.fromBlock = r.from;
         ge.toBlock = r.to;
@@ -240,46 +338,78 @@ GraphLayout layoutFunctionGraph(const std::vector<CfgBlock>& blocks,
         ge.isFallthrough = r.fallthrough;
         const GraphNode* src = nodeByBlock[r.from];
         if (r.to < 0) {
-            // Exit stub: returns drop below, calls/computed jog right.
+            // Exit stub: returns and unresolved computed jumps drop cleanly below.
             ge.lane = 0;
-            if (r.kind == EdgeKind::Return) {
-                const int cx = src->x + src->w / 2;
-                ge.points = {{cx, src->y + src->h},
-                             {cx, src->y + src->h + metrics.rowGap / 2}};
-            } else {
-                const int my = src->y + src->h / 2;
-                ge.points = {{src->x + src->w, my},
-                             {src->x + src->w + metrics.colGap / 2, my}};
-            }
+            const int cx = src->x + src->w / 2;
+            const int drop = std::max(1, metrics.rowGap / 3);
+            ge.points = {{cx, src->y + src->h},
+                         {cx, src->y + src->h + drop}};
             out.edges.push_back(ge);
             continue;
         }
         const GraphNode* dst = nodeByBlock[r.to];
-        ge.lane = lanes[laneIdx++];
-        ge.isBackEdge = (dst->row <= src->row);
+        ge.lane = fwdLane[i];
+        ge.isBackEdge = fwdIsBack[i];
         if (!ge.isBackEdge) {
-            // Forward: down out of the source, jog in the gap below it,
-            // straight down the target column into the target top.
-            // Same column + adjacent rows: single straight spine.
-            const int sx = src->x + src->w / 2;
-            const int tx = dst->x + dst->w / 2;
+            const int sx = srcPortX[i];
+            const int tx = dstPortX[i];
             const int ySrcBot = src->y + src->h;
             const int yDstTop = dst->y;
-            const int yJog = ySrcBot + 1 + ge.lane;
+            const int maxJog = ySrcBot + metrics.rowGap - rowMargin;
+            const int yJog = std::min(maxJog, ySrcBot + rowMargin + ge.lane * laneStep);
+
             if (sx == tx && dst->row == src->row + 1) {
                 ge.points = {{sx, ySrcBot}, {sx, yDstTop}};
             } else {
-                ge.points = {{sx, ySrcBot},
-                             {sx, yJog},
-                             {tx, yJog},
-                             {tx, yDstTop}};
+                // Check if a straight vertical drop along tx crosses any intermediate node.
+                bool blocked = false;
+                int maxObsRight = 0;
+                if (dst->row > src->row + 1) {
+                    const int tol = std::max(1, metrics.charWidth);
+                    for (const GraphNode& mid : out.nodes) {
+                        if (mid.row > src->row && mid.row < dst->row) {
+                            if (tx >= mid.x - tol && tx <= mid.x + mid.w + tol) {
+                                blocked = true;
+                                maxObsRight = std::max(maxObsRight, mid.x + mid.w);
+                            }
+                        }
+                    }
+                }
+                if (!blocked) {
+                    ge.points = {{sx, ySrcBot},
+                                 {sx, yJog},
+                                 {tx, yJog},
+                                 {tx, yDstTop}};
+                } else {
+                    // Route through the vertical gutter adjacent to dst's column.
+                    int gutterX = 0;
+                    const int colMargin = std::max(1, metrics.colGap / 3);
+                    const int colStep = std::max(1, metrics.colGap / 8);
+                    if (dst->col > 0) {
+                        const int leftBound = colX(dst->col) - metrics.colGap + colMargin;
+                        const int rightBound = colX(dst->col) - colMargin;
+                        gutterX = std::min(rightBound, leftBound + (ge.lane % 4) * colStep);
+                    } else {
+                        const int rightBound = colW + metrics.colGap - colMargin;
+                        gutterX = std::min(rightBound, maxObsRight + colMargin + (ge.lane % 4) * colStep);
+                    }
+                    const int yEntryJog = std::max(yJog + 1, yDstTop - rowMargin);
+                    ge.points = {{sx, ySrcBot},
+                                 {sx, yJog},
+                                 {gutterX, yJog},
+                                 {gutterX, yEntryJog},
+                                 {tx, yEntryJog},
+                                 {tx, yDstTop}};
+                }
             }
         } else {
             // Back edge: out the right side, up the channel right of all
             // columns, back in the right side of the target.
-            const int chX = out.width + 1 + ge.lane;
-            const int ySrc = src->y + src->h / 2;
-            const int yDst = dst->y + dst->h / 2;
+            const int chMargin = std::max(1, metrics.colGap / 3);
+            const int chStep = std::max(1, metrics.colGap / 6);
+            const int chX = baseWidth + chMargin + ge.lane * chStep;
+            const int ySrc = backSrcY[i];
+            const int yDst = backDstY[i];
             ge.points = {{src->x + src->w, ySrc},
                          {chX, ySrc},
                          {chX, yDst},
@@ -288,14 +418,15 @@ GraphLayout layoutFunctionGraph(const std::vector<CfgBlock>& blocks,
         out.edges.push_back(ge);
     }
 
-    // Expand the canvas to contain every routed point (back-edge channels
-    // extend right of the node area).
+    // Expand the canvas to contain every routed point plus clean outer padding.
     for (const GraphEdge& ge : out.edges) {
         for (const GraphPoint& p : ge.points) {
             if (p.x + 1 > out.width) out.width = p.x + 1;
             if (p.y + 1 > out.height) out.height = p.y + 1;
         }
     }
+    out.width += std::max(1, metrics.padX);
+    out.height += std::max(1, metrics.padY);
 
     return out;
 }

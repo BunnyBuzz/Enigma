@@ -34,6 +34,7 @@ public:
 
 signals:
     void navigateRequested(uint64_t addr);
+    void addressSelected(uint64_t addr);
     void nodeSelected(int blockIndex);
 
 private:

@@ -4,9 +4,11 @@
 
 #include <QApplication>
 #include <QFontMetrics>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QWheelEvent>
@@ -28,6 +30,7 @@ FunctionGraphView::FunctionGraphView(QWidget* parent)
     setFrameShape(QFrame::NoFrame);
     viewport()->setBackgroundRole(QPalette::NoRole);
     setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
 }
 
 void FunctionGraphView::setGraph(const cfg::DisassemblyCFG* cfg,
@@ -64,6 +67,7 @@ void FunctionGraphView::setZoom(double z) {
     zoom_ = nz;
     updateScrollBars();
     viewport()->update();
+    emit zoomChanged(zoom_);
 }
 
 void FunctionGraphView::zoomIn() {
@@ -76,15 +80,17 @@ void FunctionGraphView::zoomOut() {
 
 void FunctionGraphView::zoomReset() {
     setZoom(1.0);
+    centerOnContent();
 }
 
 void FunctionGraphView::zoomFit() {
     if (layout_.width <= 0 || layout_.height <= 0) return;
+    const int pad = 32;
     const double zx =
-        static_cast<double>(viewport()->width()) / layout_.width;
+        static_cast<double>(std::max(1, viewport()->width() - pad)) / layout_.width;
     const double zy =
-        static_cast<double>(viewport()->height()) / layout_.height;
-    setZoom(std::min(zx, zy));
+        static_cast<double>(std::max(1, viewport()->height() - pad)) / layout_.height;
+    setZoom(std::clamp(std::min(zx, zy), kMinZoom, 1.25));
     centerOnContent();
 }
 
@@ -147,8 +153,8 @@ void FunctionGraphView::rebuild() {
     metrics.charWidth = charW;
     metrics.padX = charW;
     metrics.padY = fm.ascent() / 2 + 2;
-    metrics.colGap = charW * 6;
-    metrics.rowGap = fm.height() * 2;
+    metrics.colGap = charW * 8;
+    metrics.rowGap = fm.height() * 3;
 
     layout_ = cfg::layoutFunctionGraph(cfg_->blocks(), cfg_->edges(),
                                        funcStart_, funcEnd_, inputs, metrics);
@@ -175,23 +181,24 @@ void FunctionGraphView::updateScrollBars() {
     const int vpH = viewport()->height();
     const int contentW = static_cast<int>(std::ceil(layout_.width * zoom_));
     const int contentH = static_cast<int>(std::ceil(layout_.height * zoom_));
-    // Free canvas: when content overflows, allow a full viewport of margin
-    // past every edge so no part of the map is ever stuck out of reach.
-    // (Fitting content stays locked at 0 with the centering origin.)
+    // Free canvas with bounded margin so edges stay reachable without letting
+    // the whole graph disappear off-screen.
     if (contentW <= vpW) {
         horizontalScrollBar()->setRange(0, 0);
     } else {
-        horizontalScrollBar()->setRange(-vpW, contentW);
+        const int marginX = vpW / 3;
+        horizontalScrollBar()->setRange(-marginX, contentW - vpW + marginX);
     }
     horizontalScrollBar()->setPageStep(std::max(1, vpW));
-    horizontalScrollBar()->setSingleStep(std::max(1, contentW / 100));
+    horizontalScrollBar()->setSingleStep(std::max(24, contentW / 40));
     if (contentH <= vpH) {
         verticalScrollBar()->setRange(0, 0);
     } else {
-        verticalScrollBar()->setRange(-vpH, contentH);
+        const int marginY = vpH / 3;
+        verticalScrollBar()->setRange(-marginY, contentH - vpH + marginY);
     }
     verticalScrollBar()->setPageStep(std::max(1, vpH));
-    verticalScrollBar()->setSingleStep(std::max(1, contentH / 100));
+    verticalScrollBar()->setSingleStep(std::max(24, contentH / 40));
 }
 
 void FunctionGraphView::centerOnContent() {
@@ -268,7 +275,7 @@ void FunctionGraphView::paintEvent(QPaintEvent* event) {
                              e.kind == cfg::EdgeKind::ComputedCall ||
                              e.kind == cfg::EdgeKind::Conditional);
         QPen pen(color, 2, dashed ? Qt::DashLine : Qt::SolidLine,
-                 Qt::FlatCap, Qt::MiterJoin);
+                 Qt::RoundCap, Qt::RoundJoin);
         pen.setCosmetic(true);
         painter.setPen(pen);
         painter.setBrush(Qt::NoBrush);
@@ -279,9 +286,9 @@ void FunctionGraphView::paintEvent(QPaintEvent* event) {
             const double dy = p.y * zoom_ + oy - sy;
             poly << QPointF(dx, dy);
         }
-        painter.drawPolyline(poly);
 
-        // Arrowhead on the final segment (exit stubs get none).
+        // Stop the polyline stroke at the arrowhead base so the 2px stroke
+        // never pokes past the sharp tip of the arrowhead triangle.
         if (e.toBlock >= 0 && poly.size() >= 2) {
             const QPointF tip = poly.back();
             const QPointF prev = poly[poly.size() - 2];
@@ -289,15 +296,32 @@ void FunctionGraphView::paintEvent(QPaintEvent* event) {
             const double len = std::hypot(dir.x(), dir.y());
             if (len > 1e-6) {
                 dir /= len;
-                const QPointF normal(-dir.y(), dir.x());
                 const double hl = kHeadLen * zoom_;
                 const double hw = kHeadHalfW * zoom_;
+                QPolygonF drawPoly = poly;
+                if (len > hl) {
+                    drawPoly.back() = tip - dir * (hl * 0.75);
+                }
+                painter.drawPolyline(drawPoly);
+
+                const QPointF normal(-dir.y(), dir.x());
                 QPolygonF head;
                 head << tip << (tip - dir * hl + normal * hw)
                      << (tip - dir * hl - normal * hw);
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(color);
                 painter.drawPolygon(head);
+            } else {
+                painter.drawPolyline(poly);
+            }
+        } else {
+            painter.drawPolyline(poly);
+            // Draw a subtle terminal T-bar on Return/Computed exit stubs.
+            if (poly.size() >= 2) {
+                const QPointF tip = poly.back();
+                const double barHalf = 6.0 * zoom_;
+                painter.drawLine(QPointF(tip.x() - barHalf, tip.y()),
+                                 QPointF(tip.x() + barHalf, tip.y()));
             }
         }
     }
@@ -320,9 +344,16 @@ void FunctionGraphView::paintEvent(QPaintEvent* event) {
         painter.setBrush(fill);
         painter.drawRoundedRect(r, 6.0, 6.0);
 
-        QPen borderPen(isEntry ? EditorTheme::cfaColor(cfg::EdgeKind::Unconditional)
-                               : QColor(0x8a, 0x93, 0xa0),
-                       isEntry ? 2 : 1);
+        QColor borderColor = QColor(0x8a, 0x93, 0xa0);
+        int borderW = 1;
+        if (isSelected || isCurrent) {
+            borderColor = EditorTheme::cfaColor(cfg::EdgeKind::Unconditional);
+            borderW = 2;
+        } else if (isEntry) {
+            borderColor = EditorTheme::cfaColor(cfg::EdgeKind::Unconditional);
+            borderW = 2;
+        }
+        QPen borderPen(borderColor, borderW);
         borderPen.setCosmetic(true);
         painter.setPen(borderPen);
         painter.setBrush(Qt::NoBrush);
@@ -349,36 +380,156 @@ void FunctionGraphView::resizeEvent(QResizeEvent* event) {
 
 void FunctionGraphView::wheelEvent(QWheelEvent* event) {
     if (event->modifiers() & Qt::ControlModifier) {
-        // Zoom anchored under the cursor.
+        // Zoom anchored under the cursor (accounting for centering origin).
         const QPointF cursor = event->position();
+        double ox = 0.0, oy = 0.0;
+        contentOrigin(ox, oy);
         const double sx = horizontalScrollBar()->value();
         const double sy = verticalScrollBar()->value();
-        const double ax = (cursor.x() + sx) / zoom_;
-        const double ay = (cursor.y() + sy) / zoom_;
+        const double ax = (cursor.x() + sx - ox) / zoom_;
+        const double ay = (cursor.y() + sy - oy) / zoom_;
         const double nz = std::clamp(zoom_ * (event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15),
                                      kMinZoom, kMaxZoom);
         if (std::abs(nz - zoom_) > 1e-9) {
             zoom_ = nz;
             updateScrollBars();
+            double nox = 0.0, noy = 0.0;
+            contentOrigin(nox, noy);
             horizontalScrollBar()->setValue(
-                static_cast<int>(std::round(ax * nz - cursor.x())));
+                static_cast<int>(std::round(ax * nz + nox - cursor.x())));
             verticalScrollBar()->setValue(
-                static_cast<int>(std::round(ay * nz - cursor.y())));
+                static_cast<int>(std::round(ay * nz + noy - cursor.y())));
             viewport()->update();
+            emit zoomChanged(zoom_);
         }
+        event->accept();
+        return;
+    }
+    if (event->modifiers() & Qt::ShiftModifier) {
+        const int delta = event->angleDelta().y() != 0
+                              ? event->angleDelta().y()
+                              : event->angleDelta().x();
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta);
         event->accept();
         return;
     }
     QAbstractScrollArea::wheelEvent(event);
 }
 
-int FunctionGraphView::nodeAt(const QPoint& pos) const {
+void FunctionGraphView::keyPressEvent(QKeyEvent* event) {
+    switch (event->key()) {
+    case Qt::Key_Plus:
+    case Qt::Key_Equal:
+        zoomIn();
+        event->accept();
+        return;
+    case Qt::Key_Minus:
+        zoomOut();
+        event->accept();
+        return;
+    case Qt::Key_0:
+        zoomFit();
+        event->accept();
+        return;
+    case Qt::Key_1:
+        zoomReset();
+        event->accept();
+        return;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        if (selectedBlock_ >= 0 && cfg_ &&
+            selectedBlock_ < static_cast<int>(cfgCopy_.blocks().size())) {
+            const uint64_t addr = cfgCopy_.blocks()[static_cast<size_t>(selectedBlock_)].startAddr;
+            if (addr != 0) emit navigateRequested(addr);
+            event->accept();
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    QAbstractScrollArea::keyPressEvent(event);
+}
+
+int FunctionGraphView::nodeIndexAt(const QPoint& pos) const {
     if (!hasGraph_ || layout_.nodes.empty()) return -1;
     for (size_t i = 0; i < layout_.nodes.size(); ++i) {
         if (nodeRectPx(static_cast<int>(i)).contains(pos))
-            return layout_.nodes[i].blockIndex;
+            return static_cast<int>(i);
     }
     return -1;
+}
+
+int FunctionGraphView::nodeAt(const QPoint& pos) const {
+    const int idx = nodeIndexAt(pos);
+    return idx >= 0 ? layout_.nodes[static_cast<size_t>(idx)].blockIndex : -1;
+}
+
+uint64_t FunctionGraphView::addressAt(const QPoint& pos, bool preferTarget) const {
+    const int idx = nodeIndexAt(pos);
+    if (idx < 0 || !cfg_) return 0;
+    const int bi = layout_.nodes[static_cast<size_t>(idx)].blockIndex;
+    const cfg::CfgBlock& b = cfgCopy_.blocks()[static_cast<size_t>(bi)];
+    uint64_t fallback = b.startAddr;
+
+    if (idx >= static_cast<int>(nodeLines_.size())) return fallback;
+    const QStringList& lines = nodeLines_[static_cast<size_t>(idx)];
+    if (lines.isEmpty()) return fallback;
+
+    const QRect r = nodeRectPx(idx);
+    const double stride = usedMetrics_.lineHeight * zoom_;
+    const double localY = pos.y() - r.y() - usedMetrics_.padY * zoom_;
+    const int lineIdx = (stride > 0.0)
+        ? std::clamp(static_cast<int>(std::floor(localY / stride)),
+                     0, static_cast<int>(lines.size()) - 1)
+        : 0;
+
+    const QString& ln = lines[lineIdx];
+    static const QRegularExpression hexRe(QStringLiteral("0x([0-9a-fA-F]+)"));
+    auto it = hexRe.globalMatch(ln);
+    uint64_t lineAddr = 0;
+    if (it.hasNext()) {
+        auto m0 = it.next();
+        if (m0.capturedStart() <= 4) {
+            bool ok = false;
+            uint64_t v = m0.captured(1).toULongLong(&ok, 16);
+            if (ok && v != 0) lineAddr = v;
+        }
+    }
+
+    if (preferTarget) {
+        // Check if cursor clicked specifically on an operand hex target (after the leading address),
+        // or if this line is a direct branch/call edge in the CFG.
+        const double charW = std::max(1.0, usedMetrics_.charWidth * zoom_);
+        const double localX = pos.x() - r.x() - usedMetrics_.padX * zoom_;
+        const int col = std::max(0, static_cast<int>(std::floor(localX / charW)));
+
+        auto matchIt = hexRe.globalMatch(ln);
+        bool first = true;
+        while (matchIt.hasNext()) {
+            auto m = matchIt.next();
+            if (first && lineAddr != 0 && m.capturedStart() <= 4) {
+                first = false;
+                continue;
+            }
+            first = false;
+            if (col >= m.capturedStart() - 1 && col <= m.capturedEnd() + 1) {
+                bool ok = false;
+                uint64_t tgt = m.captured(1).toULongLong(&ok, 16);
+                if (ok && tgt != 0) return tgt;
+            }
+        }
+        // Also follow branch/call target if clicking the instruction operand region.
+        if (lineAddr != 0 && col > 12) {
+            for (const cfg::CfaEdge& e : cfgCopy_.edges()) {
+                if (e.fromAddr == lineAddr && e.toAddr != 0) {
+                    return e.toAddr;
+                }
+            }
+        }
+    }
+
+    return lineAddr != 0 ? lineAddr : fallback;
 }
 
 int FunctionGraphView::blockForAddress(uint64_t addr) const {
@@ -390,10 +541,26 @@ int FunctionGraphView::blockForAddress(uint64_t addr) const {
     return -1;
 }
 
+void FunctionGraphView::ensureBlockVisible(int blockIndex) {
+    if (blockIndex < 0 || !hasGraph_) return;
+    for (size_t i = 0; i < layout_.nodes.size(); ++i) {
+        if (layout_.nodes[i].blockIndex == blockIndex) {
+            const QRect r = nodeRectPx(static_cast<int>(i));
+            const QRect vp = viewport()->rect();
+            if (vp.isEmpty() || vp.intersects(r)) return;
+            const QPoint delta = r.center() - vp.center();
+            horizontalScrollBar()->setValue(horizontalScrollBar()->value() + delta.x());
+            verticalScrollBar()->setValue(verticalScrollBar()->value() + delta.y());
+            return;
+        }
+    }
+}
+
 void FunctionGraphView::setCurrentAddress(uint64_t addr) {
     const int nb = blockForAddress(addr);
     if (nb == currentBlock_) return;
     currentBlock_ = nb;
+    ensureBlockVisible(nb);
     viewport()->update();
 }
 
@@ -405,7 +572,6 @@ void FunctionGraphView::mousePressEvent(QMouseEvent* event) {
         panning_ = true;
         panLast_ = event->pos();
         viewport()->setCursor(Qt::ClosedHandCursor);
-        viewport()->grabMouse();
         event->accept();
         return;
     }
@@ -419,11 +585,11 @@ void FunctionGraphView::mousePressEvent(QMouseEvent* event) {
 
 void FunctionGraphView::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
-        const int nb = nodeAt(event->pos());
-        if (nb >= 0 && cfg_) {
-            const cfg::CfgBlock& b =
-                cfgCopy_.blocks()[static_cast<size_t>(nb)];
-            if (b.startAddr != 0) emit navigateRequested(b.startAddr);
+        const uint64_t addr = addressAt(event->pos(), true);
+        if (addr != 0) {
+            emit navigateRequested(addr);
+            event->accept();
+            return;
         }
     }
     QAbstractScrollArea::mouseDoubleClickEvent(event);
@@ -447,7 +613,6 @@ void FunctionGraphView::mouseMoveEvent(QMouseEvent* event) {
             panning_ = true;
             panLast_ = event->pos();
             viewport()->setCursor(Qt::ClosedHandCursor);
-            viewport()->grabMouse();
             event->accept();
             return;
         }
@@ -462,13 +627,13 @@ void FunctionGraphView::mouseReleaseEvent(QMouseEvent* event) {
         (event->button() == Qt::LeftButton ||
          event->button() == Qt::MiddleButton)) {
         panning_ = false;
-        viewport()->releaseMouse();
-        viewport()->setCursor(Qt::ArrowCursor);
+        viewport()->setCursor(nodeAt(event->pos()) >= 0 ? Qt::PointingHandCursor
+                                                        : Qt::ArrowCursor);
         pressBlock_ = -1;
         event->accept();
         return;
     }
-    // Plain left click (no drag): select the node under the cursor.
+    // Plain left click (no drag): select the node under the cursor and sync address.
     if (event->button() == Qt::LeftButton && !pressMoved_ &&
         pressBlock_ >= 0) {
         if (pressBlock_ != selectedBlock_) {
@@ -476,6 +641,8 @@ void FunctionGraphView::mouseReleaseEvent(QMouseEvent* event) {
             viewport()->update();
         }
         emit nodeSelected(pressBlock_);
+        const uint64_t addr = addressAt(event->pos(), false);
+        if (addr != 0) emit addressSelected(addr);
     }
     pressBlock_ = -1;
     QAbstractScrollArea::mouseReleaseEvent(event);
